@@ -1,4 +1,4 @@
-# LoRA instruct script for Japanese Language models.
+# LoRA instruction tuning script for Japanese Language models.
 
 | models                   | tested platform                              |
 |--------------------------|----------------------------------------------|
