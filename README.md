@@ -18,7 +18,7 @@ nohup python3 lora_finetune.py --model_name="HUGGINGFACE_MODEL_NAME" > logging.o
 **test (example line-corporation/japanese-large-lm-3.6b dolly-15k-ja 1epoch)**
 
 ```bash
-python3 lora_finetune.py --slow_tokenizer
+python3 lora_test.py --slow_tokenizer
 :
 赤、緑、青
 日本で2番目に高い山は、北岳(3,193m)である。
@@ -69,7 +69,7 @@ python3 setup.py install
 
 **text-generation-webui**
 
-follow jetson python 3.8
+follow jetson (follow python 3.8)
 
 ```bash
 git clone https://github.com/oobabooga/text-generation-webui
