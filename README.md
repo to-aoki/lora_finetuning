@@ -55,3 +55,23 @@ pip3 install chainlit
 chainlit run app.py -w
 ```
 ![img.png](img.png)
+
+## for jetson orin (on L4T R35.2.1):
+
+**bitsandbytes**
+
+```bash
+git clone https://github.com/to-aoki/bitsandbytes.git
+cd bitsandbytes
+CUDA_VERSION=114 make cuda11x
+python3 setup.py install
+```
+
+**text-generation-webui**
+
+follow jetson python 3.8
+
+```bash
+git clone https://github.com/oobabooga/text-generation-webui
+(... remove @functools.cache ...)
+```
