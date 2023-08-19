@@ -66,7 +66,7 @@ else:
 def generate(prompt):
     inputs = tokenizer(prompt, return_tensors='pt',
                        add_special_tokens=add_special_tokens,
-                       return_token_type_ids=None,  # is_trainable=False
+                       return_token_type_ids=False,  # is_trainable=False
                        ).to(model.device)
     input_length = inputs.input_ids.shape[1]
 
