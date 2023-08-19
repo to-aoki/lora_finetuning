@@ -36,3 +36,22 @@ generation_config.json  spiece.model
 pytorch_model.bin       tokenizer.json
 ```
 
+**convert ggml (gptneox)**
+
+```bash
+git clone https://github.com/ggerganov/ggml
+cd ggml
+mkdir build && cd build
+cmake ..
+make -j
+python3 ../examples/gpt-neox/convert-h5-to-ggml.py /path/to/final_merged_checkpoint 1
+```
+
+**webui**
+
+```bash
+pip3 install ctransformers # or pip install git+https://github.com/marella/ctransformers.git
+pip3 install chainlit
+chainlit run app.py -w
+```
+![img.png](img.png)
