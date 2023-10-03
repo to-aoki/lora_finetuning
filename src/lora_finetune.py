@@ -59,7 +59,7 @@ class ScriptArguments:
     lora_dropout: Optional[float] = field(default=0.05)
     max_seq_length: Optional[int] = field(default=2048)
     model_name: Optional[str] = field(
-        default="stabilityai/japanese-stablelm-base-alpha-7b",
+        default="elyza/ELYZA-japanese-Llama-2-7b-fast-instruct",
         metadata={
             "help": "The model that you want to train from the Hugging Face hub. E.g. gpt2, gpt2-xl, bert, etc."
         }
@@ -231,11 +231,6 @@ def create_and_prepare_model(args):
         tokenizer.eos_token = tokenizer.decode(tokenizer.eos_token_id)
         tokenizer.pad_token = tokenizer.decode(tokenizer.pad_token_id)
 
-    if script_args.model_name.startswith("mistralai/Mistral-7B"):
-        # normalized Trueになってるのでトークナイザで強制する。multi-turn都合などで文字列concatする際はtokenizer_config.jsonいじる
-        # https://github.com/huggingface/transformers/issues/23818
-        tokenizer.add_eos_token = True
-
     model.config.eos_token_id = tokenizer.eos_token_id
     model.config.bos_token_id = tokenizer.bos_token_id
     if getattr(tokenizer, "pad_token", None) is None:
@@ -274,8 +269,6 @@ model, peft_config, tokenizer = create_and_prepare_model(script_args)
 model.config.use_cache = False
 dataset = load_dataset(script_args.dataset_name, split="train")
 eos_token = tokenizer.eos_token
-if script_args.model_name.startswith("mistralai/Mistral-7B"):
-    eos_token = ''
 
 def formatting_prompts_func_alpaca_short(example):
     output_texts = []
