@@ -51,11 +51,11 @@ class ScriptArguments:
     per_device_train_batch_size: Optional[int] = field(default=8)
     per_device_eval_batch_size: Optional[int] = field(default=1)
     gradient_accumulation_steps: Optional[int] = field(default=4)
-    learning_rate: Optional[float] = field(default=2e-4)
+    learning_rate: Optional[float] = field(default=3e-5)
     max_grad_norm: Optional[float] = field(default=0.3)
     weight_decay: Optional[int] = field(default=0.001)
     lora_alpha: Optional[int] = field(default=16)
-    lora_r: Optional[int] = field(default=64)
+    lora_r: Optional[int] = field(default=8)
     lora_dropout: Optional[float] = field(default=0.05)
     max_seq_length: Optional[int] = field(default=2048)
     model_name: Optional[str] = field(
@@ -103,6 +103,10 @@ class ScriptArguments:
     gradient_checkpointing: Optional[bool] = field(
         default=True,
         metadata={"help": "Enables gradient checkpointing."},
+    )
+    use_linear_target: Optional[bool] = field(
+        default=False,
+        metadata={"help": "Training linear targets."},
     )
     optim: Optional[str] = field(
         default="paged_adamw_32bit",  # low memory for paged_adamw_8bit
@@ -182,11 +186,14 @@ def create_and_prepare_model(args):
         trust_remote_code=True,
     )
 
-    if script_args.model_name.startswith("meta-llama/Llama-2"):
+    if script_args.model_name.startswith(("meta-llama/Llama-2", "elyza/ELYZA-japanese-Llama-2")):
         # check: https://github.com/huggingface/transformers/pull/24906
         model.config.pretraining_tp = 1
 
-    target_modules = find_all_linear_names(model)
+    target_modules = ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj", "embed_tokens",
+                      "lm_head"]
+    if script_args.use_linear_target:
+        target_modules = find_all_linear_names(model)
     print('target_modules:', target_modules)
 
     peft_config = LoraConfig(
@@ -207,8 +214,7 @@ def create_and_prepare_model(args):
             additional_special_tokens=['▁▁']
         )
         print('nai tokenizer loaded')
-    elif (script_args.model_name.startswith("rinna/") or
-          script_args.model_name.startswith("line-corporation/japanese-large")) :
+    elif script_args.model_name.startswith(("rinna/","line-corporation/japanese-large")):
         tokenizer = AutoTokenizer.from_pretrained(
             script_args.model_name,
             use_fast=False,
@@ -225,11 +231,15 @@ def create_and_prepare_model(args):
         tokenizer.eos_token = tokenizer.decode(tokenizer.eos_token_id)
         tokenizer.pad_token = tokenizer.decode(tokenizer.pad_token_id)
 
+    if script_args.model_name.startswith("mistralai/Mistral-7B"):
+        # normalized Trueになってるのでトークナイザで強制する。multi-turn都合などで文字列concatする際はtokenizer_config.jsonいじる
+        # https://github.com/huggingface/transformers/issues/23818
+        tokenizer.add_eos_token = True
+
     model.config.eos_token_id = tokenizer.eos_token_id
     model.config.bos_token_id = tokenizer.bos_token_id
     if getattr(tokenizer, "pad_token", None) is None:
         tokenizer.pad_token = tokenizer.eos_token
-        tokenizer.padding_side = "right"
 
     print("=" * 80)
     print(tokenizer.eos_token_id, tokenizer.eos_token)
@@ -264,6 +274,8 @@ model, peft_config, tokenizer = create_and_prepare_model(script_args)
 model.config.use_cache = False
 dataset = load_dataset(script_args.dataset_name, split="train")
 eos_token = tokenizer.eos_token
+if script_args.model_name.startswith("mistralai/Mistral-7B"):
+    eos_token = ''
 
 def formatting_prompts_func_alpaca_short(example):
     output_texts = []
@@ -358,7 +370,22 @@ def formatting_prompts_func_llama2_chat(example):
             text = f"[INST] <<SYS>>\nあなたは親切で、礼儀正しく、誠実なアシスタントです。 常に安全を保ちながら、できるだけ役立つように答えてください。 " \
                    f"回答には、有害、非倫理的、人種差別的、性差別的、有毒、危険、または違法なコンテンツを含めてはいけません。 回答は社会的に偏見がなく、本質的に前向きなものであることを確認してください。 " \
                    f"質問が意味をなさない場合、または事実に一貫性がない場合は、正しくないことに答えるのではなく、その理由を説明してください。 質問の答えがわからない場合は、誤った情報を共有しないでください。" \
-                   f"\n<</SYS>>\n\n{example['instruction'][i]} [/INST] {example['output'][i]}" + eos_token
+                   f"\n<</SYS>>\n\n{example['instruction'][i]} [/INST]{example['output'][i]}" + eos_token
+        if script_args.replace_line_sep is not None:
+            text = text.replace('\n', script_args.replace_line_sep)
+        output_texts.append(text)
+    return output_texts
+
+
+def formatting_prompts_func_llama2_chat_wo_role(example):
+    output_texts = []
+    for i in range(len(example['instruction'])):
+        if example['input'][i]:
+            text = f"[INST] <<SYS>>\n以下は、ある作業を説明した指示と、作業を補助する文脈を持つ入力の組み合わせです。<<input>>を適切に満たすような応答を書きなさい。" \
+                f"\n<</SYS>>\n\n<<input>>\n{example['input'][i]}\n<</input>>\n\n{example['instruction'][i]} [/INST] {example['output'][i]}" + eos_token
+        else:
+            text = f"[INST] <<SYS>>\n以下は、ある作業を説明した指示です。指示を適切に満たすような応答を書きなさい。" \
+                   f"\n<</SYS>>\n\n{example['instruction'][i]} [/INST]{example['output'][i]}" + eos_token
         if script_args.replace_line_sep is not None:
             text = text.replace('\n', script_args.replace_line_sep)
         output_texts.append(text)
@@ -471,9 +498,8 @@ class WithoutSpecialTokensSFTTrainer(SFTTrainer):
 
 
 trainer_class = SFTTrainer
-if (script_args.model_name.startswith("rinna/") or
-    script_args.model_name.startswith("stabilityai/japanese-stablelm-base") or
-    script_args.model_name.startswith("line-corporation/japanese-large")):
+if script_args.model_name.startswith(
+        ("rinna/", "stabilityai/japanese-stablelm-base", "line-corporation/japanese-large")):
     print('without special tokens')
     trainer_class = WithoutSpecialTokensSFTTrainer
 
@@ -491,7 +517,7 @@ trainer = trainer_class(
     train_dataset=dataset,
     peft_config=peft_config,
     max_seq_length=script_args.max_seq_length,
-    formatting_func=formatting_prompts_func_alpaca_ja,
+    formatting_func=formatting_prompts_func_llama2_chat_wo_role,
     tokenizer=tokenizer,
     args=training_arguments,
     packing=script_args.packing,

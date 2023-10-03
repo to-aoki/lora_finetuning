@@ -5,13 +5,14 @@ import torch
 from transformers import (
     HfArgumentParser,
     AutoTokenizer,
+    LogitsProcessor
 )
 from peft import AutoPeftModelForCausalLM
 
 
 @dataclass
 class ScriptArguments:
-    max_seq_length: Optional[int] = field(default=1024)
+    max_seq_length: Optional[int] = field(default=64)
     use_nai_tokenizer: Optional[bool] = field(
         default=False,
     )
@@ -58,9 +59,46 @@ else:
         script_args.lora_model, trust_remote_code=True,
         use_fast=not script_args.slow_tokenizer,
     )
+    add_special_tokens = False
     if script_args.slow_tokenizer:
         # T5Tokenizer（rinna/line）は末尾に</s>を付与してしまうのでFalseに
         add_special_tokens = False
+
+if getattr(tokenizer, "pad_token", None) is None:
+    tokenizer.pad_token = tokenizer.eos_token
+
+
+print("=" * 80)
+print(tokenizer.eos_token_id, tokenizer.eos_token)
+print(tokenizer.bos_token_id, tokenizer.bos_token)
+print(tokenizer.pad_token_id, tokenizer.pad_token)
+print(tokenizer.unk_token_id, tokenizer.unk_token)
+print("=" * 80)
+
+
+class EosTokenRewardLogitsProcessor(LogitsProcessor):
+    def __init__(self, eos_token_id: int, max_length: int):
+        if not isinstance(eos_token_id, int) or eos_token_id < 0:
+            raise ValueError(f"`eos_token_id` has to be a positive integer, but is {eos_token_id}")
+
+        if not isinstance(max_length, int) or max_length < 1:
+            raise ValueError(f"`max_length` has to be a integer bigger than 1, but is {max_length}")
+
+        self.eos_token_id = eos_token_id
+        self.max_length = max_length
+
+
+    def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
+        cur_len = input_ids.shape[-1]
+        # start to increese the reward of the  eos_tokekn from 80% max length  progressively on length
+        for cur_len in (max(0, int(self.max_length * 0.8)), self.max_length):
+            ratio = cur_len / self.max_length
+            num_tokens = scores.shape[1]  # size of vocab
+            scores[:, [i for i in range(num_tokens) if i != self.eos_token_id]] = \
+                scores[:, [i for i in range(num_tokens) if i != self.eos_token_id]] * ratio * 10 * torch.exp(
+                    -torch.sign(scores[:, [i for i in range(num_tokens) if i != self.eos_token_id]]))
+            scores[:, self.eos_token_id] = -100
+        return scores
 
 
 def generate(prompt):
@@ -68,18 +106,17 @@ def generate(prompt):
                        add_special_tokens=add_special_tokens,
                        return_token_type_ids=False,  # is_trainable=False
                        ).to(model.device)
-    input_length = inputs.input_ids.shape[1]
 
+    input_length = inputs.input_ids.shape[1]
     outputs = model.generate(
         **inputs,
+        do_sample=True,
         max_new_tokens=script_args.max_seq_length,
-        temperature=0.7,
-        top_p=0.7,
-        top_k=40,
+        temperature=0.1,
         repetition_penalty=1.1,
         eos_token_id=tokenizer.eos_token_id,
-        pad_token_id=tokenizer.eos_token_id,
-        return_dict_in_generate=True
+        pad_token_id=tokenizer.pad_token_id,
+        return_dict_in_generate=True,
     )
 
     token = outputs.sequences[0, input_length:]
@@ -94,9 +131,21 @@ def generate(prompt):
     return output_str
 
 
-text = f"以下は、ある作業を記述した指示です。要求を適切に満たすような応答を書きなさい。\n\n### 指示:\n光の三原色は？\n\n### 応答:\n"
+def alpaca_instruct(input_str):
+    return f"以下は、ある作業を記述した指示です。要求を適切に満たすような応答を書きなさい。\n\n### 指示:\n{input_str}\n\n### 応答:\n"
+
+
+def llama2_instruct(input_str):
+    return f"[INST] <<SYS>>\n以下は、ある作業を説明した指示です。指示を適切に満たすような応答を書きなさい。" \
+           f"\n<</SYS>>\n\n{input_str} [/INST]"
+
+
+text = llama2_instruct("光の三原色は？")
 print(generate(text))
-text = f"以下は、ある作業を記述した指示です。指示を適切に満たすような応答を書きなさい。\n\n### 指示:\n日本で1番高い山は富士山です。では2番目に高い山は？\n\n### 応答:\n"
+
+text = llama2_instruct("日本で1番高い山は富士山です。では2番目に高い山は？")
+
 print(generate(text))
-text = f"以下は、ある作業を記述した指示です。指示を適切に満たすような応答を書きなさい。\n\n### 指示:\n紫式部と清少納言の作風を表で比較してください。\n\n### 応答:\n"
+text = llama2_instruct("紫式部と清少納言の作風を表で比較してください。")
+
 print(generate(text))
