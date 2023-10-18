@@ -33,6 +33,7 @@ from transformers import (
 
 from trl import SFTTrainer
 
+os.environ['WANDB_DISABLED'] = 'true'  # for trl
 
 # This example lora fine-tunes Llama v2 model on Jetson AGX Orin
 #
@@ -41,7 +42,7 @@ from trl import SFTTrainer
 # peft == 0.4.0
 # bitsandbytes == 0.39.0
 # transformers == 4.31.0
-# trl == 0.5.0
+# trl == 0.7.3.dev0
 
 @dataclass
 class ScriptArguments:
@@ -136,7 +137,7 @@ class ScriptArguments:
         default=None,
         metadata={"help": "The line seperator. for rinna-3.6b specific <NL>."},
     )
-
+    neftune_noise_alpha: Optional[float] = field(default=10.)
 
 parser = HfArgumentParser(ScriptArguments)
 script_args = parser.parse_args_into_dataclasses()[0]
@@ -190,8 +191,9 @@ def create_and_prepare_model(args):
         # check: https://github.com/huggingface/transformers/pull/24906
         model.config.pretraining_tp = 1
 
-    target_modules = ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj", "embed_tokens",
-                      "lm_head"]
+    target_modules = [
+        "q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+
     if script_args.use_linear_target:
         target_modules = find_all_linear_names(model)
     print('target_modules:', target_modules)
@@ -263,6 +265,7 @@ training_arguments = TrainingArguments(
     weight_decay=script_args.weight_decay,
     group_by_length=script_args.group_by_length,
     lr_scheduler_type=script_args.lr_scheduler_type,
+    gradient_checkpointing=True,  # need 0.7.2
 )
 
 model, peft_config, tokenizer = create_and_prepare_model(script_args)
@@ -425,6 +428,7 @@ class WithoutSpecialTokensSFTTrainer(SFTTrainer):
         chars_per_token: Optional[float] = 3.6,
         dataset_num_proc: Optional[int] = None,
         dataset_batch_size: int = 1000,
+        neftune_noise_alpha=10,
     ):
         super().__init__(
             model,
@@ -449,6 +453,7 @@ class WithoutSpecialTokensSFTTrainer(SFTTrainer):
             # v 0.5.1
             # dataset_num_proc,
             # dataset_batch_size,
+            neftune_noise_alpha=neftune_noise_alpha,
         )
 
     def _prepare_non_packed_dataloader(
@@ -504,6 +509,9 @@ llama2: LlamaTokenizer, used bos and eos.
 opencalm: no special tokens append.
 matsuo-lab: no special tokens append.
 """
+neftune_noise_alpha = script_args.neftune_noise_alpha
+if neftune_noise_alpha <= 0:
+    neftune_noise_alpha = None
 
 trainer = trainer_class(
     model=model,
@@ -514,6 +522,7 @@ trainer = trainer_class(
     tokenizer=tokenizer,
     args=training_arguments,
     packing=script_args.packing,
+    neftune_noise_alpha=neftune_noise_alpha
 )
 
 trainer.train()
