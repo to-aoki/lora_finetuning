@@ -113,7 +113,7 @@ def generate(prompt):
         do_sample=True,
         max_new_tokens=script_args.max_seq_length,
         temperature=0.1,
-        repetition_penalty=1.1,
+        repetition_penalty=1.5,
         eos_token_id=tokenizer.eos_token_id,
         pad_token_id=tokenizer.pad_token_id,
         return_dict_in_generate=True,

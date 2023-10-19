@@ -105,10 +105,6 @@ class ScriptArguments:
         default=True,
         metadata={"help": "Enables gradient checkpointing."},
     )
-    use_linear_target: Optional[bool] = field(
-        default=False,
-        metadata={"help": "Training linear targets."},
-    )
     optim: Optional[str] = field(
         default="paged_adamw_32bit",  # low memory for paged_adamw_8bit
         metadata={"help": "The optimizer to use."},
@@ -138,6 +134,7 @@ class ScriptArguments:
         metadata={"help": "The line seperator. for rinna-3.6b specific <NL>."},
     )
     neftune_noise_alpha: Optional[float] = field(default=10.)
+
 
 parser = HfArgumentParser(ScriptArguments)
 script_args = parser.parse_args_into_dataclasses()[0]
@@ -190,12 +187,11 @@ def create_and_prepare_model(args):
     if script_args.model_name.startswith(("meta-llama/Llama-2", "elyza/ELYZA-japanese-Llama-2")):
         # check: https://github.com/huggingface/transformers/pull/24906
         model.config.pretraining_tp = 1
-
-    target_modules = [
-        "q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
-
-    if script_args.use_linear_target:
+        target_modules = [
+            "q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+    else:
         target_modules = find_all_linear_names(model)
+
     print('target_modules:', target_modules)
 
     peft_config = LoraConfig(
