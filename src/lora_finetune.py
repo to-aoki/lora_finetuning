@@ -194,6 +194,10 @@ def create_and_prepare_model(args):
 
     print('target_modules:', target_modules)
 
+    fan_in_fan_out = False
+    if model.config.model_type == 'gpt2':
+        fan_in_fan_out = True
+
     peft_config = LoraConfig(
         lora_alpha=script_args.lora_alpha,
         lora_dropout=script_args.lora_dropout,
@@ -201,6 +205,7 @@ def create_and_prepare_model(args):
         bias="none",
         task_type="CAUSAL_LM",
         target_modules=target_modules,
+        fan_in_fan_out=fan_in_fan_out
     )
 
     if script_args.model_name.startswith("stabilityai/japanese-stablelm-base"):
@@ -383,6 +388,47 @@ def formatting_prompts_func_llama2_chat_wo_role(example):
         output_texts.append(text)
     return output_texts
 
+
+def formatting_prompts_func_llm_jp_sft_categories(example):
+    # https://github.com/llm-jp/llm-jp-sft/tree/lora#dataset-preparation
+    # {"text": "### 指示：以下の質問に答えなさい。 ### 質問：日本で一番高い山は？ ### 回答：富士山"} ?
+    output_texts = []
+    for i in range(len(example['instruction'])):
+        category = example['category']
+        if category == "open_qa":
+            text = f"### 指示：以下の質問に答えなさい。 ### 質問：{example['instruction'][i]} ### 回答：{example['output'][i]}" + eos_token
+
+        elif category == "closed_qa":
+            text = f"### 指示：以下の質問に入力から答えなさい。 ### 質問：{example['instruction'][i]} ### 入力：{example['input'][i]} ### 回答：{example['output'][i]}" + eos_token
+
+        elif category == "general_qa":
+            text = f"### 指示：以下の質問に答えなさい。 ### 質問：{example['instruction'][i]} ### 回答：{example['output'][i]}" + eos_token
+
+        elif category == "classification":
+            text = f"### 指示：以下の質問に質問中の選択肢から答えなさい。 ### 質問：{example['instruction'][i]} ### 回答：{example['output'][i]}" + eos_token
+
+        elif category == "information_extraction":
+            text = f"### 指示：以下の質問に入力から答えなさい。 ### 質問：{example['instruction'][i]} ### 入力：{example['input'][i]} ### 回答：{example['output'][i]}" + eos_token
+
+        elif category == "brainstorming":
+            text = f"### 指示：以下の質問に答えなさい。 ### 質問：{example['instruction'][i]} ### 回答：{example['output'][i]}" + eos_token
+
+        elif category == "summarization":
+            text = f"### 指示：以下の質問に入力から要約して答えなさい。 ### 質問：{example['instruction'][i]} ### 入力：{example['input'][i]} ### 回答：{example['output'][i]}" + eos_token
+
+        elif category == "creative_writing":
+            text = f"### 指示：以下の要求から物語を書きなさい。 ### 要求：{example['instruction'][i]} ### 物語：{example['output'][i]}" + eos_token
+
+        else:
+            if example['input'][i]:
+                text = f"### 指示：以下の質問に入力から答えなさい。 ### 質問：{example['instruction'][i]} ### 入力：{example['input'][i]} ### 回答：{example['output'][i]}" + eos_token
+            else:
+                text = f"### 指示：以下の質問に答えなさい。 ### 質問：{example['instruction'][i]} ### 回答：{example['output'][i]}" + eos_token
+
+        if script_args.replace_line_sep is not None:
+            text = text.replace('\n', script_args.replace_line_sep)
+        output_texts.append(text)
+    return output_texts
 
 import torch.nn as nn
 from typing import Callable, Dict, List, Optional, Tuple, Union
