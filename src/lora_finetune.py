@@ -17,21 +17,28 @@
 
 import os
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import torch
-from datasets import load_dataset
-import bitsandbytes as bnb
-from peft import LoraConfig
+import torch.nn as nn
+from datasets import load_dataset, Dataset
 from transformers import (
     AutoModelForCausalLM,
     BitsAndBytesConfig,
     HfArgumentParser,
     AutoTokenizer,
     TrainingArguments,
+    DataCollator,
+    PreTrainedModel,
+    PreTrainedTokenizerBase,
 )
+from transformers.trainer_utils import EvalPrediction
+from transformers.trainer_callback import TrainerCallback
 
+import bitsandbytes as bnb
+from peft import LoraConfig
 from trl import SFTTrainer
+
 
 os.environ['WANDB_DISABLED'] = 'true'  # for trl
 
@@ -272,174 +279,6 @@ training_arguments = TrainingArguments(
 model, peft_config, tokenizer = create_and_prepare_model(script_args)
 model.config.use_cache = False
 dataset = load_dataset(script_args.dataset_name, split="train")
-eos_token = tokenizer.eos_token
-
-def formatting_prompts_func_alpaca_short(example):
-    output_texts = []
-    for i in range(len(example['instruction'])):
-        if example['input'][i]:
-            text = f"### Instruction:\n{example['instruction'][i]}\n\n### Input:\n{example['input'][i]}\n\n### Response:\n{example['output'][i]}" + eos_token
-        else:
-            text = f"### Instruction:\n{example['instruction'][i]}\n\n### Response:\n{example['output'][i]}" + eos_token
-        if script_args.replace_line_sep is not None:
-            text = text.replace('\n', script_args.replace_line_sep)
-        output_texts.append(text)
-    return output_texts
-
-
-def formatting_prompts_func_rinna_ja(example):
-    output_texts = []
-    for i in range(len(example['instruction'])):
-        if example['input'][i]:
-            text = f"ユーザー: {example['instruction'][i]}\nシステム: 分かりました。\nユーザー: {example['input'][i]}\nシステム: {example['output'][i]}" + eos_token
-        else:
-            text = f"ユーザー: {example['instruction'][i]}\nシステム: {example['output'][i]}" + eos_token
-        if script_args.replace_line_sep is not None:
-            text = text.replace('\n', script_args.replace_line_sep)
-        output_texts.append(text)
-    return output_texts
-
-
-def formatting_prompts_func_alpaca_ja(example):
-
-    output_texts = []
-    for i in range(len(example['instruction'])):
-        if example['input'][i]:
-            text = f"以下は、ある作業を説明した指示と、作業を補助する文脈を持つ入力の組み合わせです。指示を適切に満たすような応答を書きなさい。\n\n### 指示:\n{example['instruction'][i]}\n\n### 入力:\n{example['input'][i]}\n\n### 応答:\n{example['output'][i]}" + eos_token
-        else:
-            text = f"以下は、ある作業を説明した指示です。指示を適切に満たすような応答を書きなさい。\n\n### 指示:\n{example['instruction'][i]}\n\n### 応答:\n{example['output'][i]}" + eos_token
-        if script_args.replace_line_sep is not None:
-            text = text.replace('\n', script_args.replace_line_sep)
-        output_texts.append(text)
-    return output_texts
-
-
-def formatting_prompts_func_dolly_categories(example):
-
-    output_texts = []
-    for i in range(len(example['instruction'])):
-        category = example['category']
-        if category == "open_qa":
-            text = f"以下は、ある作業を説明した指示です。指示を適切に満たすような応答を書きなさい。\n\n### 指示:\n{example['instruction'][i]}\n\n### 応答:\n{example['output'][i]}" + eos_token
-
-        elif category == "closed_qa":
-            text = f"以下は、ある作業を説明した指示と、作業を補助する文脈を持つ入力の組み合わせです。指示を適切に満たすような応答を入力から抜き出して書きなさい。\n\n### 指示:\n{example['instruction'][i]}\n\n### 入力:\n{example['input'][i]}\n\n### 応答:\n{example['output'][i]}" + eos_token
-
-        elif category == "general_qa":
-            text = f"下は、ある作業を説明した指示です。指示を適切に満たすような応答を書きなさい。\n\n### 指示:\n{example['instruction'][i]}\n\n### 応答:\n{example['output'][i]}" + eos_token
-
-        elif category == "classification":
-            text = f"以下は、ある作業を説明した指示です。指示に与えられる選択肢から応答を書きなさい。\n\n### 指示\n{example['instruction'][i]}\n\n### 応答:\n{example['output'][i]}" + eos_token
-
-        elif category == "information_extraction":
-            text = f"以下は、ある作業を説明した指示と、作業を補助する文脈を持つ入力の組み合わせです。指示を適切に満たすような応答を入力より抽出して書きなさい。\n\n### 指示:\n{example['instruction'][i]}\n\n### 入力:\n{example['input'][i]}\n\n### 応答:\n{example['output'][i]}" + eos_token
-
-        elif category == "brainstorming":
-            text = f"以下は、ある議題に関する意見の収集です。指示に従い応答を書きなさい。\n\n### 指示:\n{example['instruction'][i]}\n\n### 応答:\n{example['output'][i]}" + eos_token
-
-        elif category == "summarization":
-            text = f"以下は、ある作業を説明した指示と、作業を補助する文脈を持つ入力の組み合わせです。指示を適切に満たすような応答を入力を要約して書きなさい。\n\n### 指示:\n{example['instruction'][i]}\n\n### 入力:\n{example['input'][i]}\n\n### 応答:\n{example['output'][i]}" + eos_token
-
-        elif category == "creative_writing":
-            text = f"以下は、あるストーリーの方針を説明した指示です。指示を満たすストーリーを応答に書きなさい。\n\n### 指示:\n{example['instruction'][i]}\n\n### 応答:\n{example['output'][i]}" + eos_token
-
-        else:
-            if example['input'][i]:
-                text = f"以下は、ある作業を説明した指示と、作業を補助する文脈を持つ入力の組み合わせです。指示を適切に満たすような応答を書きなさい。\n\n### 指示:\n{example['instruction'][i]}\n\n### 入力:\n{example['input'][i]}\n\n### 応答:\n{example['output'][i]}" + eos_token
-            else:
-                text = f"以下は、ある作業を説明した指示です。指示を適切に満たすような応答を書きなさい。\n\n### 指示:\n{example['instruction'][i]}\n\n### 応答:\n{example['output'][i]}" + eos_token
-        if script_args.replace_line_sep is not None:
-            text = text.replace('\n', script_args.replace_line_sep)
-        output_texts.append(text)
-    return output_texts
-
-
-def formatting_prompts_func_llama2_chat(example):
-    output_texts = []
-    for i in range(len(example['instruction'])):
-        if example['input'][i]:
-            text = f"[INST] <<SYS>>\nあなたは親切で、礼儀正しく、誠実なアシスタントです。 常に安全を保ちながら、できるだけ役立つように答えてください。 " \
-                f"回答には、有害、非倫理的、人種差別的、性差別的、有毒、危険、または違法なコンテンツを含めてはいけません。 回答は社会的に偏見がなく、本質的に前向きなものであることを確認してください。 " \
-                f"質問には<<input>>を参照して答えてください。" \
-                f"質問が意味をなさない場合、または入力に一貫性がない場合は、正しくないことに答えるのではなく、その理由を説明してください。 質問の答えや<<input>>がわからない場合は、誤った情報を共有しないでください。" \
-                f"\n<</SYS>>\n\n<<input>>\n{example['input'][i]}\n<</input>>\n\n{example['instruction'][i]} [/INST] {example['output'][i]}" + eos_token
-        else:
-            text = f"[INST] <<SYS>>\nあなたは親切で、礼儀正しく、誠実なアシスタントです。 常に安全を保ちながら、できるだけ役立つように答えてください。 " \
-                   f"回答には、有害、非倫理的、人種差別的、性差別的、有毒、危険、または違法なコンテンツを含めてはいけません。 回答は社会的に偏見がなく、本質的に前向きなものであることを確認してください。 " \
-                   f"質問が意味をなさない場合、または事実に一貫性がない場合は、正しくないことに答えるのではなく、その理由を説明してください。 質問の答えがわからない場合は、誤った情報を共有しないでください。" \
-                   f"\n<</SYS>>\n\n{example['instruction'][i]} [/INST]{example['output'][i]}" + eos_token
-        if script_args.replace_line_sep is not None:
-            text = text.replace('\n', script_args.replace_line_sep)
-        output_texts.append(text)
-    return output_texts
-
-
-def formatting_prompts_func_llama2_chat_wo_role(example):
-    output_texts = []
-    for i in range(len(example['instruction'])):
-        if example['input'][i]:
-            text = f"[INST] <<SYS>>\n以下は、ある作業を説明した指示と、作業を補助する文脈を持つ入力の組み合わせです。<<input>>を適切に満たすような応答を書きなさい。" \
-                f"\n<</SYS>>\n\n<<input>>\n{example['input'][i]}\n<</input>>\n\n{example['instruction'][i]} [/INST] {example['output'][i]}" + eos_token
-        else:
-            text = f"[INST] <<SYS>>\n以下は、ある作業を説明した指示です。指示を適切に満たすような応答を書きなさい。" \
-                   f"\n<</SYS>>\n\n{example['instruction'][i]} [/INST]{example['output'][i]}" + eos_token
-        if script_args.replace_line_sep is not None:
-            text = text.replace('\n', script_args.replace_line_sep)
-        output_texts.append(text)
-    return output_texts
-
-
-def formatting_prompts_func_llm_jp_sft_categories(example):
-    # https://github.com/llm-jp/llm-jp-sft/tree/lora#dataset-preparation
-    # {"text": "### 指示：以下の質問に答えなさい。 ### 質問：日本で一番高い山は？ ### 回答：富士山"} ?
-    output_texts = []
-    for i in range(len(example['instruction'])):
-        category = example['category']
-        if category == "open_qa":
-            text = f"### 指示：以下の質問に答えなさい。 ### 質問：{example['instruction'][i]} ### 回答：{example['output'][i]}" + eos_token
-
-        elif category == "closed_qa":
-            text = f"### 指示：以下の質問に入力から答えなさい。 ### 質問：{example['instruction'][i]} ### 入力：{example['input'][i]} ### 回答：{example['output'][i]}" + eos_token
-
-        elif category == "general_qa":
-            text = f"### 指示：以下の質問に答えなさい。 ### 質問：{example['instruction'][i]} ### 回答：{example['output'][i]}" + eos_token
-
-        elif category == "classification":
-            text = f"### 指示：以下の質問に質問中の選択肢から答えなさい。 ### 質問：{example['instruction'][i]} ### 回答：{example['output'][i]}" + eos_token
-
-        elif category == "information_extraction":
-            text = f"### 指示：以下の質問に入力から答えなさい。 ### 質問：{example['instruction'][i]} ### 入力：{example['input'][i]} ### 回答：{example['output'][i]}" + eos_token
-
-        elif category == "brainstorming":
-            text = f"### 指示：以下の質問に答えなさい。 ### 質問：{example['instruction'][i]} ### 回答：{example['output'][i]}" + eos_token
-
-        elif category == "summarization":
-            text = f"### 指示：以下の質問に入力から要約して答えなさい。 ### 質問：{example['instruction'][i]} ### 入力：{example['input'][i]} ### 回答：{example['output'][i]}" + eos_token
-
-        elif category == "creative_writing":
-            text = f"### 指示：以下の要求から物語を書きなさい。 ### 要求：{example['instruction'][i]} ### 物語：{example['output'][i]}" + eos_token
-
-        else:
-            if example['input'][i]:
-                text = f"### 指示：以下の質問に入力から答えなさい。 ### 質問：{example['instruction'][i]} ### 入力：{example['input'][i]} ### 回答：{example['output'][i]}" + eos_token
-            else:
-                text = f"### 指示：以下の質問に答えなさい。 ### 質問：{example['instruction'][i]} ### 回答：{example['output'][i]}" + eos_token
-
-        if script_args.replace_line_sep is not None:
-            text = text.replace('\n', script_args.replace_line_sep)
-        output_texts.append(text)
-    return output_texts
-
-import torch.nn as nn
-from typing import Callable, Dict, List, Optional, Tuple, Union
-from datasets import Dataset
-from transformers import (
-    DataCollator,
-    PreTrainedModel,
-    PreTrainedTokenizerBase,
-)
-from transformers.trainer_utils import EvalPrediction
-from transformers.trainer_callback import TrainerCallback
 
 
 class WithoutSpecialTokensSFTTrainer(SFTTrainer):
@@ -537,11 +376,184 @@ class WithoutSpecialTokensSFTTrainer(SFTTrainer):
         return tokenized_dataset
 
 
+eos_token = tokenizer.eos_token
+bos_token = tokenizer.bos_token
+add_special_tokens = True
+test_message = '今日もいい天気ですね'
+test_ids = tokenizer(test_message,
+    add_special_tokens=add_special_tokens)
 trainer_class = SFTTrainer
-if script_args.model_name.startswith(
-        ("rinna/", "stabilityai/japanese-stablelm-base", "line-corporation/japanese-large")):
+
+if test_ids['input_ids'][-1] == tokenizer.eos_token_id:
     print('without special tokens')
+    add_special_tokens = False
+elif test_ids['input_ids'][0] == tokenizer.bos_token_id:
+    bos_token = ''
+
+print("=" * 80)
+print(bos_token + test_message + eos_token,
+      tokenizer(bos_token + test_message + eos_token, add_special_tokens=add_special_tokens))
+print("=" * 80)
+
+if not add_special_tokens:
     trainer_class = WithoutSpecialTokensSFTTrainer
+
+
+def formatting_prompts_func_alpaca_short(example):
+    output_texts = []
+    for i in range(len(example['instruction'])):
+        if example['input'][i]:
+            text = bos_token + f"### Instruction:\n{example['instruction'][i]}\n\n### Input:\n{example['input'][i]}\n\n### Response:\n{example['output'][i]}" + eos_token
+        else:
+            text = bos_token + f"### Instruction:\n{example['instruction'][i]}\n\n### Response:\n{example['output'][i]}" + eos_token
+        if script_args.replace_line_sep is not None:
+            text = text.replace('\n', script_args.replace_line_sep)
+        output_texts.append(text)
+    return output_texts
+
+
+def formatting_prompts_func_rinna_ja(example):
+    output_texts = []
+    for i in range(len(example['instruction'])):
+        if example['input'][i]:
+            text = bos_token + f"ユーザー: {example['instruction'][i]}\nシステム: 分かりました。\nユーザー: {example['input'][i]}\nシステム: {example['output'][i]}" + eos_token
+        else:
+            text = bos_token + f"ユーザー: {example['instruction'][i]}\nシステム: {example['output'][i]}" + eos_token
+        if script_args.replace_line_sep is not None:
+            text = text.replace('\n', script_args.replace_line_sep)
+        output_texts.append(text)
+    return output_texts
+
+
+def formatting_prompts_func_alpaca_ja(example):
+
+    output_texts = []
+    for i in range(len(example['instruction'])):
+        if example['input'][i]:
+            text = bos_token + f"以下は、ある作業を説明した指示と、作業を補助する文脈を持つ入力の組み合わせです。指示を適切に満たすような応答を書きなさい。\n\n### 指示:\n{example['instruction'][i]}\n\n### 入力:\n{example['input'][i]}\n\n### 応答:\n{example['output'][i]}" + eos_token
+        else:
+            text = bos_token + f"以下は、ある作業を説明した指示です。指示を適切に満たすような応答を書きなさい。\n\n### 指示:\n{example['instruction'][i]}\n\n### 応答:\n{example['output'][i]}" + eos_token
+        if script_args.replace_line_sep is not None:
+            text = text.replace('\n', script_args.replace_line_sep)
+        output_texts.append(text)
+    return output_texts
+
+
+def formatting_prompts_func_dolly_categories(example):
+
+    output_texts = []
+    for i in range(len(example['instruction'])):
+        category = example['category']
+        if category == "open_qa":
+            text = bos_token + f"以下は、ある作業を説明した指示です。指示を適切に満たすような応答を書きなさい。\n\n### 指示:\n{example['instruction'][i]}\n\n### 応答:\n{example['output'][i]}" + eos_token
+
+        elif category == "closed_qa":
+            text = bos_token + f"以下は、ある作業を説明した指示と、作業を補助する文脈を持つ入力の組み合わせです。指示を適切に満たすような応答を入力から抜き出して書きなさい。\n\n### 指示:\n{example['instruction'][i]}\n\n### 入力:\n{example['input'][i]}\n\n### 応答:\n{example['output'][i]}" + eos_token
+
+        elif category == "general_qa":
+            text = bos_token + f"下は、ある作業を説明した指示です。指示を適切に満たすような応答を書きなさい。\n\n### 指示:\n{example['instruction'][i]}\n\n### 応答:\n{example['output'][i]}" + eos_token
+
+        elif category == "classification":
+            text = bos_token + f"以下は、ある作業を説明した指示です。指示に与えられる選択肢から応答を書きなさい。\n\n### 指示\n{example['instruction'][i]}\n\n### 応答:\n{example['output'][i]}" + eos_token
+
+        elif category == "information_extraction":
+            text = bos_token + f"以下は、ある作業を説明した指示と、作業を補助する文脈を持つ入力の組み合わせです。指示を適切に満たすような応答を入力より抽出して書きなさい。\n\n### 指示:\n{example['instruction'][i]}\n\n### 入力:\n{example['input'][i]}\n\n### 応答:\n{example['output'][i]}" + eos_token
+
+        elif category == "brainstorming":
+            text = bos_token + f"以下は、ある議題に関する意見の収集です。指示に従い応答を書きなさい。\n\n### 指示:\n{example['instruction'][i]}\n\n### 応答:\n{example['output'][i]}" + eos_token
+
+        elif category == "summarization":
+            text = bos_token + f"以下は、ある作業を説明した指示と、作業を補助する文脈を持つ入力の組み合わせです。指示を適切に満たすような応答を入力を要約して書きなさい。\n\n### 指示:\n{example['instruction'][i]}\n\n### 入力:\n{example['input'][i]}\n\n### 応答:\n{example['output'][i]}" + eos_token
+
+        elif category == "creative_writing":
+            text = bos_token + f"以下は、あるストーリーの方針を説明した指示です。指示を満たすストーリーを応答に書きなさい。\n\n### 指示:\n{example['instruction'][i]}\n\n### 応答:\n{example['output'][i]}" + eos_token
+
+        else:
+            if example['input'][i]:
+                text = bos_token + f"以下は、ある作業を説明した指示と、作業を補助する文脈を持つ入力の組み合わせです。指示を適切に満たすような応答を書きなさい。\n\n### 指示:\n{example['instruction'][i]}\n\n### 入力:\n{example['input'][i]}\n\n### 応答:\n{example['output'][i]}" + eos_token
+            else:
+                text = bos_token + f"以下は、ある作業を説明した指示です。指示を適切に満たすような応答を書きなさい。\n\n### 指示:\n{example['instruction'][i]}\n\n### 応答:\n{example['output'][i]}" + eos_token
+        if script_args.replace_line_sep is not None:
+            text = text.replace('\n', script_args.replace_line_sep)
+        output_texts.append(text)
+    return output_texts
+
+
+def formatting_prompts_func_llama2_chat(example):
+    output_texts = []
+    for i in range(len(example['instruction'])):
+        if example['input'][i]:
+            text = bos_token + f"[INST] <<SYS>>\nあなたは親切で、礼儀正しく、誠実なアシスタントです。 常に安全を保ちながら、できるだけ役立つように答えてください。 " \
+                f"回答には、有害、非倫理的、人種差別的、性差別的、有毒、危険、または違法なコンテンツを含めてはいけません。 回答は社会的に偏見がなく、本質的に前向きなものであることを確認してください。 " \
+                f"質問には<<input>>を参照して答えてください。" \
+                f"質問が意味をなさない場合、または入力に一貫性がない場合は、正しくないことに答えるのではなく、その理由を説明してください。 質問の答えや<<input>>がわからない場合は、誤った情報を共有しないでください。" \
+                f"\n<</SYS>>\n\n<<input>>\n{example['input'][i]}\n<</input>>\n\n{example['instruction'][i]} [/INST] {example['output'][i]}" + eos_token
+        else:
+            text = bos_token + f"[INST] <<SYS>>\nあなたは親切で、礼儀正しく、誠実なアシスタントです。 常に安全を保ちながら、できるだけ役立つように答えてください。 " \
+                   f"回答には、有害、非倫理的、人種差別的、性差別的、有毒、危険、または違法なコンテンツを含めてはいけません。 回答は社会的に偏見がなく、本質的に前向きなものであることを確認してください。 " \
+                   f"質問が意味をなさない場合、または事実に一貫性がない場合は、正しくないことに答えるのではなく、その理由を説明してください。 質問の答えがわからない場合は、誤った情報を共有しないでください。" \
+                   f"\n<</SYS>>\n\n{example['instruction'][i]} [/INST]{example['output'][i]}" + eos_token
+        if script_args.replace_line_sep is not None:
+            text = text.replace('\n', script_args.replace_line_sep)
+        output_texts.append(text)
+    return output_texts
+
+
+def formatting_prompts_func_llama2_chat_wo_role(example):
+    output_texts = []
+    for i in range(len(example['instruction'])):
+        if example['input'][i]:
+            text = bos_token + f"[INST] <<SYS>>\n以下は、ある作業を説明した指示と、作業を補助する文脈を持つ入力の組み合わせです。<<input>>を適切に満たすような応答を書きなさい。" \
+                f"\n<</SYS>>\n\n<<input>>\n{example['input'][i]}\n<</input>>\n\n{example['instruction'][i]} [/INST] {example['output'][i]}" + eos_token
+        else:
+            text = bos_token + f"[INST] <<SYS>>\n以下は、ある作業を説明した指示です。指示を適切に満たすような応答を書きなさい。" \
+                   f"\n<</SYS>>\n\n{example['instruction'][i]} [/INST]{example['output'][i]}" + eos_token
+        if script_args.replace_line_sep is not None:
+            text = text.replace('\n', script_args.replace_line_sep)
+        output_texts.append(text)
+    return output_texts
+
+
+def formatting_prompts_func_llm_jp_sft_categories(example):
+    # https://github.com/llm-jp/llm-jp-sft/tree/lora#dataset-preparation
+    # {"text": "### 指示：以下の質問に答えなさい。 ### 質問：日本で一番高い山は？ ### 回答：富士山"} ?
+    output_texts = []
+    for i in range(len(example['instruction'])):
+        category = example['category']
+        if category == "open_qa":
+            text = bos_token + f"### 指示：以下の質問に答えなさい。 ### 質問：{example['instruction'][i]} ### 回答：{example['output'][i]}" + eos_token
+
+        elif category == "closed_qa":
+            text = bos_token + f"### 指示：以下の質問に入力から答えなさい。 ### 質問：{example['instruction'][i]} ### 入力：{example['input'][i]} ### 回答：{example['output'][i]}" + eos_token
+
+        elif category == "general_qa":
+            text = bos_token + f"### 指示：以下の質問に答えなさい。 ### 質問：{example['instruction'][i]} ### 回答：{example['output'][i]}" + eos_token
+
+        elif category == "classification":
+            text = bos_token + f"### 指示：以下の質問に質問中の選択肢から答えなさい。 ### 質問：{example['instruction'][i]} ### 回答：{example['output'][i]}" + eos_token
+
+        elif category == "information_extraction":
+            text = bos_token + f"### 指示：以下の質問に入力から答えなさい。 ### 質問：{example['instruction'][i]} ### 入力：{example['input'][i]} ### 回答：{example['output'][i]}" + eos_token
+
+        elif category == "brainstorming":
+            text = bos_token + f"### 指示：以下の質問に答えなさい。 ### 質問：{example['instruction'][i]} ### 回答：{example['output'][i]}" + eos_token
+
+        elif category == "summarization":
+            text = bos_token + f"### 指示：以下の質問に入力から要約して答えなさい。 ### 質問：{example['instruction'][i]} ### 入力：{example['input'][i]} ### 回答：{example['output'][i]}" + eos_token
+
+        elif category == "creative_writing":
+            text = bos_token + f"### 指示：以下の要求から物語を書きなさい。 ### 要求：{example['instruction'][i]} ### 物語：{example['output'][i]}" + eos_token
+
+        else:
+            if example['input'][i]:
+                text = bos_token + f"### 指示：以下の質問に入力から答えなさい。 ### 質問：{example['instruction'][i]} ### 入力：{example['input'][i]} ### 回答：{example['output'][i]}" + eos_token
+            else:
+                text = bos_token + f"### 指示：以下の質問に答えなさい。 ### 質問：{example['instruction'][i]} ### 回答：{example['output'][i]}" + eos_token
+
+        if script_args.replace_line_sep is not None:
+            text = text.replace('\n', script_args.replace_line_sep)
+        output_texts.append(text)
+    return output_texts
 
 
 """

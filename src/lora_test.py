@@ -1,11 +1,12 @@
+import torch
 from dataclasses import dataclass, field
 from typing import Optional
 
-import torch
 from transformers import (
     HfArgumentParser,
     AutoTokenizer,
-    LogitsProcessor
+    LogitsProcessor,
+    AutoModelForCausalLM
 )
 from peft import AutoPeftModelForCausalLM
 
@@ -26,6 +27,9 @@ class ScriptArguments:
         default="lora_model/final_checkpoints",
         metadata={"help": "apply lora model directory"},
     )
+    base_model: str = field(
+        default=None,
+    )
     replace_line_sep: str = field(
         default=None,
         metadata={"help": "The line seperator. for rinna <NL>."},
@@ -35,15 +39,23 @@ class ScriptArguments:
 parser = HfArgumentParser(ScriptArguments)
 script_args = parser.parse_args_into_dataclasses()[0]
 
-model = AutoPeftModelForCausalLM.from_pretrained(
-    script_args.lora_model,
-    load_in_4bit=script_args.load_in_4bit,
-    is_trainable=False,
-    device_map="auto", torch_dtype=torch.bfloat16,
-    trust_remote_code=True)
+
+if script_args.base_model:
+    model = AutoModelForCausalLM.from_pretrained(
+        script_args.base_model,
+        load_in_4bit=script_args.load_in_4bit,
+        device_map="auto", torch_dtype=torch.bfloat16,
+        trust_remote_code=True)
+    script_args.lora_model = script_args.base_model
+else:
+    model = AutoPeftModelForCausalLM.from_pretrained(
+        script_args.lora_model,
+        load_in_4bit=script_args.load_in_4bit,
+        is_trainable=False,
+        device_map="auto", torch_dtype=torch.bfloat16,
+        trust_remote_code=True)
 
 add_special_tokens = True
-
 if script_args.use_nai_tokenizer:
     # stable-lm tokenizer setting
     from transformers import LlamaTokenizer
@@ -59,14 +71,20 @@ else:
         script_args.lora_model, trust_remote_code=True,
         use_fast=not script_args.slow_tokenizer,
     )
-    add_special_tokens = False
-    if script_args.slow_tokenizer:
-        # T5Tokenizer（rinna/line）は末尾に</s>を付与してしまうのでFalseに
-        add_special_tokens = False
 
 if getattr(tokenizer, "pad_token", None) is None:
     tokenizer.pad_token = tokenizer.eos_token
 
+test_message = '今日もいい天気ですね'
+test_ids = tokenizer(test_message,
+    add_special_tokens=add_special_tokens)
+
+bos_token = tokenizer.bos_token
+if add_special_tokens:
+    if test_ids['input_ids'][-1] == tokenizer.eos_token_id:
+        add_special_tokens = False
+    elif test_ids['input_ids'][0] == tokenizer.bos_token_id:
+        bos_token = ''
 
 print("=" * 80)
 print(tokenizer.eos_token_id, tokenizer.eos_token)
@@ -106,7 +124,6 @@ def generate(prompt):
                        add_special_tokens=add_special_tokens,
                        return_token_type_ids=False,  # is_trainable=False
                        ).to(model.device)
-
     input_length = inputs.input_ids.shape[1]
     outputs = model.generate(
         **inputs,
@@ -131,21 +148,25 @@ def generate(prompt):
     return output_str
 
 
-def alpaca_instruct(input_str):
-    return f"以下は、ある作業を記述した指示です。要求を適切に満たすような応答を書きなさい。\n\n### 指示:\n{input_str}\n\n### 応答:\n"
+def alpaca_instruct(input_str, bos_token=bos_token):
+    return bos_token + f"以下は、ある作業を記述した指示です。要求を適切に満たすような応答を書きなさい。\n\n### 指示:\n{input_str}\n\n### 応答:\n"
 
 
-def llama2_instruct(input_str):
-    return f"[INST] <<SYS>>\n以下は、ある作業を説明した指示です。指示を適切に満たすような応答を書きなさい。" \
+def llama2_instruct(input_str, bos_token=bos_token):
+    return bos_token + f"[INST] <<SYS>>\nあなたは誠実で優秀な日本人のアシスタントです。" \
            f"\n<</SYS>>\n\n{input_str} [/INST]"
+
+
+def llm_jp_instruct(input_str, bos_token=bos_token):
+    return bos_token + f"### 指示：以下の質問に答えなさい。 ### 質問：{input_str} ### 回答："
 
 
 text = llama2_instruct("光の三原色は？")
 print(generate(text))
 
 text = llama2_instruct("日本で1番高い山は富士山です。では2番目に高い山は？")
-
 print(generate(text))
+
 text = llama2_instruct("紫式部と清少納言の作風を表で比較してください。")
-
 print(generate(text))
+
