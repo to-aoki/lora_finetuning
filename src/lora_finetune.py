@@ -142,6 +142,7 @@ class ScriptArguments:
     )
     neftune_noise_alpha: Optional[float] = field(default=10.)
 
+import re
 
 parser = HfArgumentParser(ScriptArguments)
 script_args = parser.parse_args_into_dataclasses()[0]
@@ -215,7 +216,8 @@ def create_and_prepare_model(args):
         fan_in_fan_out=fan_in_fan_out
     )
 
-    if script_args.model_name.startswith("stabilityai/stablelm-base-alpha"):
+    if bool(re.match(r'.*japanese-stablelm.*alpha.*', script_args.model_name)):
+        print("previous ja-stablelm")
         from transformers import LlamaTokenizer
         tokenizer = LlamaTokenizer.from_pretrained(
             "novelai/nerdstash-tokenizer-v1",
