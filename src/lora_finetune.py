@@ -215,7 +215,7 @@ def create_and_prepare_model(args):
         fan_in_fan_out=fan_in_fan_out
     )
 
-    if script_args.model_name.startswith("stabilityai/japanese-stablelm-base"):
+    if script_args.model_name.startswith("stabilityai/stablelm-base-alpha"):
         from transformers import LlamaTokenizer
         tokenizer = LlamaTokenizer.from_pretrained(
             "novelai/nerdstash-tokenizer-v1",
@@ -572,7 +572,7 @@ trainer = trainer_class(
     train_dataset=dataset,
     peft_config=peft_config,
     max_seq_length=script_args.max_seq_length,
-    formatting_func=formatting_prompts_func_llama2_chat_wo_role,
+    formatting_func=formatting_prompts_func_alpaca_ja,
     tokenizer=tokenizer,
     args=training_arguments,
     packing=script_args.packing,
