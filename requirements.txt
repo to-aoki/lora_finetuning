@@ -1,4 +1,4 @@
-transformers==4.31.0
+transformers==4.34.1
 # for jetson orin (on L4T R35.2.1): https://github.com/to-aoki/bitsandbytes.git
 bitsandbytes
 peft==0.4.0
