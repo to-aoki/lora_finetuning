@@ -16,12 +16,13 @@
 # origin: https://gist.github.com/younesbelkada/9f7f75c94bdc1981c8ca5cc937d4a4da
 
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
-from datasets import load_dataset, Dataset
+from datasets import load_dataset, Dataset, concatenate_datasets
 from transformers import (
     AutoModelForCausalLM,
     BitsAndBytesConfig,
@@ -140,9 +141,21 @@ class ScriptArguments:
         default=None,
         metadata={"help": "The line seperator. for rinna-3.6b specific <NL>."},
     )
-    neftune_noise_alpha: Optional[float] = field(default=10.)
+    neftune_noise_alpha: Optional[float] = field(default=5.)
+    add_special_tokens: Optional[bool] = field(
+        default=True,
+    )
+    add_bos_token: Optional[bool] = field(
+        default=True,
+    )
+    prompt_format: str = field(
+        default="llama2_chat_wo_role",
+        metadata={"help": "alpaca_short, rinna, alpaca_ja, alpaca_dolly, llama2_chat, llm_jp"},
+    )
+    add_oaast: bool = field(
+        default=False,
+    )
 
-import re
 
 parser = HfArgumentParser(ScriptArguments)
 script_args = parser.parse_args_into_dataclasses()[0]
@@ -380,16 +393,19 @@ class WithoutSpecialTokensSFTTrainer(SFTTrainer):
 
 eos_token = tokenizer.eos_token
 bos_token = tokenizer.bos_token
-add_special_tokens = True
+add_special_tokens = script_args.add_special_tokens
 test_message = '今日もいい天気ですね'
 test_ids = tokenizer(test_message,
     add_special_tokens=add_special_tokens)
 trainer_class = SFTTrainer
+if add_special_tokens:
+    if test_ids['input_ids'][-1] == tokenizer.eos_token_id:
+        print('without special tokens')
+        add_special_tokens = False
+    elif test_ids['input_ids'][0] == tokenizer.bos_token_id:
+        bos_token = ''
 
-if test_ids['input_ids'][-1] == tokenizer.eos_token_id:
-    print('without special tokens')
-    add_special_tokens = False
-elif test_ids['input_ids'][0] == tokenizer.bos_token_id:
+if not script_args.add_bos_token:
     bos_token = ''
 
 print("=" * 80)
@@ -432,9 +448,9 @@ def formatting_prompts_func_alpaca_ja(example):
     output_texts = []
     for i in range(len(example['instruction'])):
         if example['input'][i]:
-            text = bos_token + f"以下は、ある作業を説明した指示と、作業を補助する文脈を持つ入力の組み合わせです。指示を適切に満たすような応答を書きなさい。\n\n### 指示:\n{example['instruction'][i]}\n\n### 入力:\n{example['input'][i]}\n\n### 応答:\n{example['output'][i]}" + eos_token
+            text = bos_token + f"以下は、ある作業を説明した指示と、作業を補助する文脈を持つ入力の組み合わせです。指示を適切に満たすような応答を書きなさい。\n\n### 指示 :\n{example['instruction'][i]}\n\n### 入力:\n{example['input'][i]}\n\n### 応答: \n{example['output'][i]}" + eos_token
         else:
-            text = bos_token + f"以下は、ある作業を説明した指示です。指示を適切に満たすような応答を書きなさい。\n\n### 指示:\n{example['instruction'][i]}\n\n### 応答:\n{example['output'][i]}" + eos_token
+            text = bos_token + f"以下は、ある作業を説明した指示です。指示を適切に満たすような応答を書きなさい。\n\n### 指示 :\n{example['instruction'][i]}\n\n### 応答: \n{example['output'][i]}" + eos_token
         if script_args.replace_line_sep is not None:
             text = text.replace('\n', script_args.replace_line_sep)
         output_texts.append(text)
@@ -447,34 +463,34 @@ def formatting_prompts_func_dolly_categories(example):
     for i in range(len(example['instruction'])):
         category = example['category']
         if category == "open_qa":
-            text = bos_token + f"以下は、ある作業を説明した指示です。指示を適切に満たすような応答を書きなさい。\n\n### 指示:\n{example['instruction'][i]}\n\n### 応答:\n{example['output'][i]}" + eos_token
+            text = bos_token + f"以下は、ある作業を説明した指示です。指示を適切に満たすような応答を書きなさい。\n\n### 指示 :\n{example['instruction'][i]}\n\n### 応答: \n{example['output'][i]}" + eos_token
 
         elif category == "closed_qa":
-            text = bos_token + f"以下は、ある作業を説明した指示と、作業を補助する文脈を持つ入力の組み合わせです。指示を適切に満たすような応答を入力から抜き出して書きなさい。\n\n### 指示:\n{example['instruction'][i]}\n\n### 入力:\n{example['input'][i]}\n\n### 応答:\n{example['output'][i]}" + eos_token
+            text = bos_token + f"以下は、ある作業を説明した指示と、作業を補助する文脈を持つ入力の組み合わせです。指示を適切に満たすような応答を入力から抜き出して書きなさい。\n\n### 指示 :\n{example['instruction'][i]}\n\n### 入力:\n{example['input'][i]}\n\n### 応答: \n{example['output'][i]}" + eos_token
 
         elif category == "general_qa":
-            text = bos_token + f"下は、ある作業を説明した指示です。指示を適切に満たすような応答を書きなさい。\n\n### 指示:\n{example['instruction'][i]}\n\n### 応答:\n{example['output'][i]}" + eos_token
+            text = bos_token + f"下は、ある作業を説明した指示です。指示を適切に満たすような応答を書きなさい。\n\n### 指示 :\n{example['instruction'][i]}\n\n### 応答: \n{example['output'][i]}" + eos_token
 
         elif category == "classification":
-            text = bos_token + f"以下は、ある作業を説明した指示です。指示に与えられる選択肢から応答を書きなさい。\n\n### 指示\n{example['instruction'][i]}\n\n### 応答:\n{example['output'][i]}" + eos_token
+            text = bos_token + f"以下は、ある作業を説明した指示です。指示に与えられる選択肢から応答を書きなさい。\n\n### 指示\n{example['instruction'][i]}\n\n### 応答: \n{example['output'][i]}" + eos_token
 
         elif category == "information_extraction":
-            text = bos_token + f"以下は、ある作業を説明した指示と、作業を補助する文脈を持つ入力の組み合わせです。指示を適切に満たすような応答を入力より抽出して書きなさい。\n\n### 指示:\n{example['instruction'][i]}\n\n### 入力:\n{example['input'][i]}\n\n### 応答:\n{example['output'][i]}" + eos_token
+            text = bos_token + f"以下は、ある作業を説明した指示と、作業を補助する文脈を持つ入力の組み合わせです。指示を適切に満たすような応答を入力より抽出して書きなさい。\n\n### 指示 :\n{example['instruction'][i]}\n\n### 入力:\n{example['input'][i]}\n\n### 応答: \n{example['output'][i]}" + eos_token
 
         elif category == "brainstorming":
-            text = bos_token + f"以下は、ある議題に関する意見の収集です。指示に従い応答を書きなさい。\n\n### 指示:\n{example['instruction'][i]}\n\n### 応答:\n{example['output'][i]}" + eos_token
+            text = bos_token + f"以下は、ある議題に関する意見の収集です。指示に従い応答を書きなさい。\n\n### 指示 :\n{example['instruction'][i]}\n\n### 応答: \n{example['output'][i]}" + eos_token
 
         elif category == "summarization":
-            text = bos_token + f"以下は、ある作業を説明した指示と、作業を補助する文脈を持つ入力の組み合わせです。指示を適切に満たすような応答を入力を要約して書きなさい。\n\n### 指示:\n{example['instruction'][i]}\n\n### 入力:\n{example['input'][i]}\n\n### 応答:\n{example['output'][i]}" + eos_token
+            text = bos_token + f"以下は、ある作業を説明した指示と、作業を補助する文脈を持つ入力の組み合わせです。指示を適切に満たすような応答を入力を要約して書きなさい。\n\n### 指示 :\n{example['instruction'][i]}\n\n### 入力:\n{example['input'][i]}\n\n### 応答: \n{example['output'][i]}" + eos_token
 
         elif category == "creative_writing":
-            text = bos_token + f"以下は、あるストーリーの方針を説明した指示です。指示を満たすストーリーを応答に書きなさい。\n\n### 指示:\n{example['instruction'][i]}\n\n### 応答:\n{example['output'][i]}" + eos_token
+            text = bos_token + f"以下は、あるストーリーの方針を説明した指示です。指示を満たすストーリーを応答に書きなさい。\n\n### 指示 :\n{example['instruction'][i]}\n\n### 応答: \n{example['output'][i]}" + eos_token
 
         else:
             if example['input'][i]:
-                text = bos_token + f"以下は、ある作業を説明した指示と、作業を補助する文脈を持つ入力の組み合わせです。指示を適切に満たすような応答を書きなさい。\n\n### 指示:\n{example['instruction'][i]}\n\n### 入力:\n{example['input'][i]}\n\n### 応答:\n{example['output'][i]}" + eos_token
+                text = bos_token + f"以下は、ある作業を説明した指示と、作業を補助する文脈を持つ入力の組み合わせです。指示を適切に満たすような応答を書きなさい。\n\n### 指示 :\n{example['instruction'][i]}\n\n### 入力:\n{example['input'][i]}\n\n### 応答: \n{example['output'][i]}" + eos_token
             else:
-                text = bos_token + f"以下は、ある作業を説明した指示です。指示を適切に満たすような応答を書きなさい。\n\n### 指示:\n{example['instruction'][i]}\n\n### 応答:\n{example['output'][i]}" + eos_token
+                text = bos_token + f"以下は、ある作業を説明した指示です。指示を適切に満たすような応答を書きなさい。\n\n### 指示 :\n{example['instruction'][i]}\n\n### 応答: \n{example['output'][i]}" + eos_token
         if script_args.replace_line_sep is not None:
             text = text.replace('\n', script_args.replace_line_sep)
         output_texts.append(text)
@@ -558,6 +574,18 @@ def formatting_prompts_func_llm_jp_sft_categories(example):
     return output_texts
 
 
+def formatting_prompts_calm2_instruct(example):
+    output_texts = []
+    for i in range(len(example['instruction'])):
+        if example['input'][i]:
+            text = bos_token + f"USER: {example['instruction'][i]} \nINPUT: {example['input'][i]} \nASSISTANT: {example['output'][i]}" + eos_token
+        else:
+            text = bos_token + f"USER: {example['instruction'][i]} \nASSISTANT: {example['output'][i]}" + eos_token
+        if script_args.replace_line_sep is not None:
+            text = text.replace('\n', script_args.replace_line_sep)
+        output_texts.append(text)
+    return output_texts
+
 """
 rinna, line: T5Tokenizer(use_fast=False), eos(</s>) token append default.
 stablelm: LlamaTokenizer, bos token(<|startoftext|>) append default. no used pre-training?
@@ -565,6 +593,85 @@ llama2: LlamaTokenizer, used bos and eos.
 opencalm: no special tokens append.
 matsuo-lab: no special tokens append.
 """
+
+alpaca_short_template = "### Instruction:\n{}\n\n### Response:\n{}"
+rinna_template = "ユーザー: {}\nシステム: {}"
+alpaca_ja_template = "### 指示: \n{}\n\n### 応答: \n{}"
+formart_llama2_template = "[INST] {} [/INST] {} "
+llm_jp_template = "### 質問：{} ### 回答：{}"
+calm2_template = "USER: {}\nASSISTANT: {}"
+
+prompt_format = formart_llama2_template
+format_func = formatting_prompts_func_llama2_chat_wo_role
+if script_args.prompt_format == 'alpaca_short':
+    prompt_format = alpaca_short_template
+    format_func = formatting_prompts_func_alpaca_short
+elif script_args.prompt_format == 'rinna':
+    prompt_format = rinna_template
+    format_func = formatting_prompts_func_rinna_ja
+elif script_args.prompt_format == 'alpaca_ja':
+    prompt_format = alpaca_ja_template
+    format_func = formatting_prompts_func_alpaca_ja
+elif script_args.prompt_format == 'alpaca_dolly':
+    prompt_format = alpaca_ja_template
+    format_func = formatting_prompts_func_dolly_categories
+elif script_args.prompt_format == 'llama2_chat':
+    format_func = formatting_prompts_func_llama2_chat
+elif script_args.prompt_format == 'llm_jp':
+    prompt_format = llm_jp_template
+    format_func = formatting_prompts_func_llm_jp_sft_categories
+elif script_args.prompt_format == 'calm2':
+    prompt_format = calm2_template
+    format_func = formatting_prompts_calm2_instruct
+
+
+def load_oaast1_ja():
+    dataset = load_dataset("kunishou/oasst1-89k-ja", "train")
+    convasation = []
+    episodes = []
+    pair = []
+    for d in dataset['train']:
+        if d['parent_id'] == 'nan' and len(episodes) > 0:
+            convasation.append(episodes)
+            episodes = []
+        pair.append(d['text_ja'])
+        if len(pair) == 2:
+            episodes.append({"instruction": pair[0], "output": pair[1]})
+            pair = []
+    return convasation
+
+
+def load_oaast1_ja_full_episode_on_instruct_histories(
+    template="### 質問：\n{} \n\n### 回答：\n{}",
+    bos='<s>',
+    eos='</s>'
+):
+    oaast1 = load_oaast1_ja()
+    convasation = []
+    for episodes in oaast1:
+        examples = []
+        for e in episodes:
+            examples.append(bos + template.format(e['instruction'], e['output']) + eos)
+        convasation.append('\n'.join(examples))
+    return convasation
+
+
+if script_args.add_oaast:
+    oaast_arrays = load_oaast1_ja_full_episode_on_instruct_histories(
+        template=prompt_format,
+        bos=bos_token, eos=eos_token)
+
+    oaast_dataset = Dataset.from_dict(
+        {
+            "instruction": oaast_arrays
+        }
+    )
+    dataset = concatenate_datasets([dataset, oaast_dataset])
+
+
+dataset = dataset.shuffle(seed=42)
+
+
 neftune_noise_alpha = script_args.neftune_noise_alpha
 if neftune_noise_alpha <= 0:
     neftune_noise_alpha = None
@@ -574,7 +681,7 @@ trainer = trainer_class(
     train_dataset=dataset,
     peft_config=peft_config,
     max_seq_length=script_args.max_seq_length,
-    formatting_func=formatting_prompts_func_alpaca_ja,
+    formatting_func=format_func,
     tokenizer=tokenizer,
     args=training_arguments,
     packing=script_args.packing,

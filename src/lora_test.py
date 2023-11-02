@@ -13,7 +13,7 @@ from peft import AutoPeftModelForCausalLM
 
 @dataclass
 class ScriptArguments:
-    max_seq_length: Optional[int] = field(default=64)
+    max_seq_length: Optional[int] = field(default=300)
     use_nai_tokenizer: Optional[bool] = field(
         default=False,
     )
@@ -33,6 +33,12 @@ class ScriptArguments:
     replace_line_sep: str = field(
         default=None,
         metadata={"help": "The line seperator. for rinna <NL>."},
+    )
+    add_special_tokens: Optional[bool] = field(
+        default=True,
+    )
+    add_bos_token: Optional[bool] = field(
+        default=True,
     )
 
 
@@ -55,9 +61,9 @@ else:
         device_map="auto", torch_dtype=torch.bfloat16,
         trust_remote_code=True)
 
-add_special_tokens = True
+add_special_tokens = script_args.add_special_tokens
 if script_args.use_nai_tokenizer:
-    # stable-lm tokenizer setting
+    # stablelm alpha tokenizer setting
     from transformers import LlamaTokenizer
     tokenizer = LlamaTokenizer.from_pretrained(
         script_args.lora_model, trust_remote_code=True,
@@ -76,17 +82,26 @@ if getattr(tokenizer, "pad_token", None) is None:
     tokenizer.pad_token = tokenizer.eos_token
 
 test_message = '今日もいい天気ですね'
-test_ids = tokenizer(test_message,
-    add_special_tokens=add_special_tokens)
-
+test_ids = tokenizer(test_message, add_special_tokens=add_special_tokens)
+print()
 bos_token = tokenizer.bos_token
 if add_special_tokens:
     if test_ids['input_ids'][-1] == tokenizer.eos_token_id:
         add_special_tokens = False
     elif test_ids['input_ids'][0] == tokenizer.bos_token_id:
         bos_token = ''
+if not script_args.add_bos_token:
+    bos_token = ''
+
+
 
 print("=" * 80)
+print("add_bos_token:", script_args.add_bos_token)
+print("add_special_tokens:", add_special_tokens)
+
+test_ids = tokenizer(bos_token + test_message, add_special_tokens=add_special_tokens)
+print(bos_token + test_message, test_ids)
+
 print(tokenizer.eos_token_id, tokenizer.eos_token)
 print(tokenizer.bos_token_id, tokenizer.bos_token)
 print(tokenizer.pad_token_id, tokenizer.pad_token)
@@ -130,7 +145,6 @@ def generate(prompt):
         do_sample=True,
         max_new_tokens=script_args.max_seq_length,
         temperature=0.1,
-        repetition_penalty=1.5,
         eos_token_id=tokenizer.eos_token_id,
         pad_token_id=tokenizer.pad_token_id,
         return_dict_in_generate=True,
@@ -149,7 +163,7 @@ def generate(prompt):
 
 
 def alpaca_instruct(input_str, bos_token=bos_token):
-    return bos_token + f"以下は、ある作業を記述した指示です。要求を適切に満たすような応答を書きなさい。\n\n### 指示:\n{input_str}\n\n### 応答:\n"
+    return bos_token + f"以下は、ある作業を説明した指示です。指示を適切に満たすような応答を書きなさい。\n\n### 指示: \n{input_str}\n\n### 応答: \n"
 
 
 def llama2_instruct(input_str, bos_token=bos_token):
@@ -161,12 +175,16 @@ def llm_jp_instruct(input_str, bos_token=bos_token):
     return bos_token + f"### 指示：以下の質問に答えなさい。 ### 質問：{input_str} ### 回答："
 
 
-text = llama2_instruct("光の三原色は？")
+def calm2_instruct(input_str, bos_token=bos_token):
+    return bos_token + f"USER: {input_str}\nASSISTANT: "
+
+
+text = alpaca_instruct("光の三原色は？", bos_token)
 print(generate(text))
 
-text = llama2_instruct("日本で1番高い山は富士山です。では2番目に高い山は？")
+text = alpaca_instruct("日本で1番高い山は富士山です。では2番目に高い山は？", bos_token)
 print(generate(text))
 
-text = llama2_instruct("紫式部と清少納言の作風を表で比較してください。")
+text = alpaca_instruct("紫式部と清少納言の作風を表で比較してください。", bos_token)
 print(generate(text))
 
