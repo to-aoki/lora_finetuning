@@ -46,7 +46,7 @@ class ScriptArguments:
         default=True,
     )
     prompt_format: str = field(
-        default="deepseek_coder",
+        default="elyza_instruct",
         metadata={"help": "lookup template.py"},
     )
     do_sample: Optional[bool] = field(

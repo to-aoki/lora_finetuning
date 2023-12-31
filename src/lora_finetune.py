@@ -69,7 +69,7 @@ class ScriptArguments:
     lora_dropout: Optional[float] = field(default=0.05)
     max_seq_length: Optional[int] = field(default=2048)
     base_model: Optional[str] = field(
-        default="deepseek-ai/deepseek-coder-6.7b-instruct",
+        default="elyza/ELYZA-japanese-Llama-2-7b-fast-instruct",
         metadata={
             "help": "The model that you want to train from the Hugging Face hub. E.g. gpt2, gpt2-xl, bert, etc."
         }
@@ -147,7 +147,7 @@ class ScriptArguments:
         default=True,
     )
     prompt_format: str = field(
-        default="deepseek_coder",
+        default="elyza_instruct",
         metadata={"help": "lookup template.py"},
     )
     use_flash_attention_2: bool = field(
