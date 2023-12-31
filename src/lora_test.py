@@ -9,7 +9,7 @@ from transformers import (
     AutoModelForCausalLM
 )
 from peft import AutoPeftModelForCausalLM
-
+from template import templates_lookup
 
 @dataclass
 class ScriptArguments:
@@ -23,6 +23,9 @@ class ScriptArguments:
     load_in_4bit: Optional[bool] = field(
         default=True,
     )
+    load_in_8bit: Optional[bool] = field(
+        default=False,
+    )
     lora_model: str = field(
         default="lora_model/final_checkpoints",
         metadata={"help": "apply lora model directory"},
@@ -30,36 +33,57 @@ class ScriptArguments:
     base_model: str = field(
         default=None,
     )
-    replace_line_sep: str = field(
-        default=None,
-        metadata={"help": "The line seperator. for rinna <NL>."},
-    )
     add_special_tokens: Optional[bool] = field(
         default=True,
     )
     add_bos_token: Optional[bool] = field(
         default=True,
     )
-
+    use_flash_attention_2: Optional[bool] = field(
+        default=False,
+    )
+    bf16: Optional[bool] = field(
+        default=True,
+    )
+    prompt_format: str = field(
+        default="deepseek_coder",
+        metadata={"help": "lookup template.py"},
+    )
+    do_sample: Optional[bool] = field(
+        default=True,
+    )
 
 parser = HfArgumentParser(ScriptArguments)
 script_args = parser.parse_args_into_dataclasses()[0]
 
+instruct_template = templates_lookup.get(script_args.prompt_format)
+
+attn_impl = "flash_attention_2" if script_args.use_flash_attention_2 else 'sdpa'
 
 if script_args.base_model:
     model = AutoModelForCausalLM.from_pretrained(
         script_args.base_model,
         load_in_4bit=script_args.load_in_4bit,
-        device_map="auto", torch_dtype=torch.bfloat16,
+        load_in_8bit=script_args.load_in_8bit,
+        device_map="auto",
+        torch_dtype=torch.bfloat16 if script_args.bf16 else torch.float16,
+        attn_implementation=attn_impl,
         trust_remote_code=True)
+    if not script_args.load_in_4bit and not script_args.load_in_8bit:
+        model.cuda()
+
     script_args.lora_model = script_args.base_model
 else:
     model = AutoPeftModelForCausalLM.from_pretrained(
         script_args.lora_model,
         load_in_4bit=script_args.load_in_4bit,
+        load_in_8bit=script_args.load_in_8bit,
         is_trainable=False,
-        device_map="auto", torch_dtype=torch.bfloat16,
+        attn_implementation=attn_impl,
+        device_map="auto",
+        torch_dtype=torch.bfloat16 if script_args.bf16 else torch.float16,
         trust_remote_code=True)
+    model.cuda()
 
 add_special_tokens = script_args.add_special_tokens
 if script_args.use_nai_tokenizer:
@@ -81,33 +105,34 @@ else:
 if getattr(tokenizer, "pad_token", None) is None:
     tokenizer.pad_token = tokenizer.eos_token
 
+eos_token = tokenizer.eos_token
+bos_token = tokenizer.bos_token
+add_special_tokens = script_args.add_special_tokens
 test_message = '今日もいい天気ですね'
 test_ids = tokenizer(test_message, add_special_tokens=add_special_tokens)
-print()
-bos_token = tokenizer.bos_token
+
 if add_special_tokens:
     if test_ids['input_ids'][-1] == tokenizer.eos_token_id:
+        print('without special tokens')
         add_special_tokens = False
-    elif test_ids['input_ids'][0] == tokenizer.bos_token_id:
+    if test_ids['input_ids'][0] == tokenizer.bos_token_id:
         bos_token = ''
+
 if not script_args.add_bos_token:
     bos_token = ''
 
-
-
 print("=" * 80)
-print("add_bos_token:", script_args.add_bos_token)
-print("add_special_tokens:", add_special_tokens)
-
-test_ids = tokenizer(bos_token + test_message, add_special_tokens=add_special_tokens)
-print(bos_token + test_message, test_ids)
-
-print(tokenizer.eos_token_id, tokenizer.eos_token)
-print(tokenizer.bos_token_id, tokenizer.bos_token)
-print(tokenizer.pad_token_id, tokenizer.pad_token)
-print(tokenizer.unk_token_id, tokenizer.unk_token)
+print(test_message)
+print(test_ids)
+print('bos_token:', bos_token)
+print('eos_token:', eos_token)
+print('add_special_tokens:', add_special_tokens)
+print(bos_token + test_message + eos_token,
+      tokenizer(bos_token + test_message + eos_token, add_special_tokens=add_special_tokens))
 print("=" * 80)
 
+instruct_template.bos_token = bos_token
+instruct_template.eos_token = eos_token
 
 class EosTokenRewardLogitsProcessor(LogitsProcessor):
     def __init__(self, eos_token_id: int, max_length: int):
@@ -119,7 +144,6 @@ class EosTokenRewardLogitsProcessor(LogitsProcessor):
 
         self.eos_token_id = eos_token_id
         self.max_length = max_length
-
 
     def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
         cur_len = input_ids.shape[-1]
@@ -142,49 +166,26 @@ def generate(prompt):
     input_length = inputs.input_ids.shape[1]
     outputs = model.generate(
         **inputs,
-        do_sample=True,
-        max_new_tokens=script_args.max_seq_length,
-        temperature=0.1,
-        eos_token_id=tokenizer.eos_token_id,
-        pad_token_id=tokenizer.pad_token_id,
-        return_dict_in_generate=True,
-    )
+        max_new_tokens=512,
+        do_sample=script_args.do_sample,
+        top_k=50,
+        num_return_sequences=1,
+        eos_token_id=tokenizer.eos_token_id)
 
-    token = outputs.sequences[0, input_length:]
-    if tokenizer.eos_token_id in token:
-        eos_index = (token == tokenizer.eos_token_id).nonzero(as_tuple=True)[0]
-        output_str = tokenizer.decode(token[:eos_index], skip_special_tokens=False)
-    else:
-        output_str = tokenizer.decode(token, skip_special_tokens=False)
-    if script_args.replace_line_sep is not None:
-        output_str = output_str.replace(script_args.replace_line_sep, "\n")
+    output_str = tokenizer.decode(
+        outputs[0][input_length:], skip_special_tokens=True)
 
     return output_str
 
+text = instruct_template.build_inference("pythonでHello,worldと出力するコードを記述してください。")
+print(text, generate(text))
 
-def alpaca_instruct(input_str, bos_token=bos_token):
-    return bos_token + f"以下は、ある作業を説明した指示です。指示を適切に満たすような応答を書きなさい。\n\n### 指示: \n{input_str}\n\n### 応答: \n"
+text = instruct_template.build_inference("光の三原色は？")
+print(text, generate(text))
 
+text = instruct_template.build_inference("日本で1番高い山は富士山です。では2番目に高い山は？")
+print(text, generate(text))
 
-def llama2_instruct(input_str, bos_token=bos_token):
-    return bos_token + f"[INST] <<SYS>>\nあなたは誠実で優秀な日本人のアシスタントです。" \
-           f"\n<</SYS>>\n\n{input_str} [/INST]"
-
-
-def llm_jp_instruct(input_str, bos_token=bos_token):
-    return bos_token + f"### 指示：以下の質問に答えなさい。 ### 質問：{input_str} ### 回答："
-
-
-def calm2_instruct(input_str, bos_token=bos_token):
-    return bos_token + f"USER: {input_str}\nASSISTANT: "
-
-
-text = alpaca_instruct("光の三原色は？", bos_token)
-print(generate(text))
-
-text = alpaca_instruct("日本で1番高い山は富士山です。では2番目に高い山は？", bos_token)
-print(generate(text))
-
-text = alpaca_instruct("紫式部と清少納言の作風を表で比較してください。", bos_token)
-print(generate(text))
+text = instruct_template.build_inference("紫式部と清少納言の作風をjsonで出力してください。")
+print(text, generate(text))
 
