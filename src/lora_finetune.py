@@ -42,7 +42,7 @@ from trl import SFTTrainer
 from template import templates_lookup
 
 
-os.environ['WANDB_DISABLED'] = 'true'  # for trl
+os.environ['WANDB_DISABLED'] = 'true'  # be removed in v5
 
 # This example lora fine-tunes Llama v2 model on Jetson AGX Orin
 #
@@ -69,7 +69,7 @@ class ScriptArguments:
     lora_dropout: Optional[float] = field(default=0.05)
     max_seq_length: Optional[int] = field(default=2048)
     base_model: Optional[str] = field(
-        default="elyza/ELYZA-japanese-Llama-2-7b-fast-instruct",
+        default="cyberagent/calm2-7b-chat",
         metadata={
             "help": "The model that you want to train from the Hugging Face hub. E.g. gpt2, gpt2-xl, bert, etc."
         }
@@ -147,7 +147,7 @@ class ScriptArguments:
         default=True,
     )
     prompt_format: str = field(
-        default="elyza_instruct",
+        default="calm2_chat",
         metadata={"help": "lookup template.py"},
     )
     use_flash_attention_2: bool = field(
@@ -158,6 +158,9 @@ class ScriptArguments:
     )
     only_instruct: bool = field(
         default=True,
+    )
+    report_to: str = field(
+        default=None,
     )
 
 
@@ -221,22 +224,27 @@ def create_and_prepare_model(args):
     if script_args.target_all_layer:
         target_modules = find_all_linear_names(model)
     else:
-        # https://www.docswell.com/s/KanHatakeyama/ZYW6ME-2023-12-09-121017#p31
-        target_modules = [
-            "lm_head",
-            "v_proj",
-            "o_proj",
-            "gate_proj",
-            "up_proj",
-        ]
+        if model.config.model_type == 'llama':
+            # https://www.docswell.com/s/KanHatakeyama/ZYW6ME-2023-12-09-121017#p31
+            target_modules = [
+                "lm_head",
+                "v_proj",
+                "o_proj",
+                "gate_proj",
+                "up_proj",
+            ]
+        elif model.config.model_type == 'gpt2':
+            # llm-jp
+            target_modules = [
+                "c_attn",
+                "c_proj",
+                "c_fc",
+            ]
+        else:
+            target_modules = find_all_linear_names(model)
     if model.config.model_type == 'gpt2':
-        # llm-jp
-        target_modules = [
-            "c_attn",
-            "c_proj",
-            "c_fc",
-        ]
         fan_in_fan_out = True
+
     print('target_modules:', target_modules)
 
     peft_config = LoraConfig(
@@ -309,6 +317,7 @@ training_arguments = TrainingArguments(
     group_by_length=script_args.group_by_length,
     lr_scheduler_type=script_args.lr_scheduler_type,
     gradient_checkpointing=True,  # need 0.7.2
+    report_to=script_args.report_to
 )
 
 model, peft_config, tokenizer = create_and_prepare_model(script_args)
@@ -411,6 +420,8 @@ class WithoutSpecialTokensSFTTrainer(SFTTrainer):
 
 eos_token = tokenizer.eos_token
 bos_token = tokenizer.bos_token
+if eos_token == bos_token:
+    bos_token = ''
 add_special_tokens = script_args.add_special_tokens
 test_message = '今日もいい天気ですね'
 test_ids = tokenizer(test_message, add_special_tokens=add_special_tokens)
@@ -457,8 +468,15 @@ if script_args.only_instruct:
     from trl import DataCollatorForCompletionOnlyLM
     # We added context here: "\n". This is enough for this tokenizer
     # https://huggingface.co/docs/trl/sft_trainer#using-tokenids-directly-for-responsetemplate
-    response_template_with_context = "\n" + instruct_template.response_prefix
-    response_template_ids = tokenizer.encode(response_template_with_context, add_special_tokens=False)[2:]
+    if instruct_template.response_prefix.startswith("#"):
+        response_template_with_context = "\n" + instruct_template.response_prefix
+        response_template_ids = tokenizer.encode(response_template_with_context, add_special_tokens=False)[2:]
+    elif instruct_template.response_prefix.endswith(" "):
+        response_template_with_context = "\n" + instruct_template.response_prefix.strip()
+        response_template_ids = tokenizer.encode(response_template_with_context, add_special_tokens=False)[1:]
+    else:
+        response_template_with_context = "\n" + instruct_template.response_prefix
+        response_template_ids = tokenizer.encode(response_template_with_context, add_special_tokens=False)[1:]
     collator = DataCollatorForCompletionOnlyLM(
         response_template_ids, tokenizer=tokenizer)
 

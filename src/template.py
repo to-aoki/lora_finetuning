@@ -58,12 +58,12 @@ class InputTemplate:
         return conversations
 
     def build_inference(self, instruction, input=None):
-        if input:
-            text = self.bos_token + self.input_template.format(
-                instruction, input) + self.response_prefix
+        if input is not None:
+            instruction_prompt = self.input_template.format(instruction, input)
+            text = self.bos_token + instruction_prompt + self.response_prefix
         else:
-            text = self.bos_token + self.no_input_template.format(
-                instruction) + self.response_prefix
+            instruction_prompt = self.no_input_template.format(instruction)
+            text = self.bos_token + instruction_prompt + self.response_prefix
         return text
 
 
@@ -100,10 +100,10 @@ templates_lookup = {
         response_prefix="[/INST]\n"
     ),
     "calm2_chat": InputTemplate(
-        input_template="USER: ｛｝\n{}\n",
-        no_input_template="USER: ｛｝\n",
-        conversation_sys="USER: ｛｝\n",
-        conversation_template="USER: ｛｝\n",
+        input_template="USER: {}\n{}\n",
+        no_input_template="USER: {}\n",
+        conversation_sys="USER: {}\n",
+        conversation_template="USER: {}\n",
         response_prefix="ASSISTANT: "
     ),
     "youri_chat": InputTemplate(
