@@ -17,13 +17,15 @@
 
 import os
 import re
+import math
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
-from datasets import load_dataset, Dataset, concatenate_datasets
+from datasets import load_dataset, Dataset
 from transformers import (
+    AutoConfig,
     AutoModelForCausalLM,
     BitsAndBytesConfig,
     HfArgumentParser,
@@ -32,6 +34,8 @@ from transformers import (
     DataCollator,
     PreTrainedModel,
     PreTrainedTokenizerBase,
+    PreTrainedTokenizer,
+    PreTrainedModel
 )
 from transformers.trainer_utils import EvalPrediction
 from transformers.trainer_callback import TrainerCallback
@@ -40,7 +44,6 @@ import bitsandbytes as bnb
 from peft import LoraConfig
 from trl import SFTTrainer
 from template import templates_lookup
-
 
 os.environ['WANDB_DISABLED'] = 'true'  # be removed in v5
 
@@ -69,7 +72,7 @@ class ScriptArguments:
     lora_dropout: Optional[float] = field(default=0.05)
     max_seq_length: Optional[int] = field(default=2048)
     base_model: Optional[str] = field(
-        default="cyberagent/calm2-7b-chat",
+        default="elyza/ELYZA-japanese-Llama-2-7b-fast-instruct",
         metadata={
             "help": "The model that you want to train from the Hugging Face hub. E.g. gpt2, gpt2-xl, bert, etc."
         }
@@ -147,7 +150,7 @@ class ScriptArguments:
         default=True,
     )
     prompt_format: str = field(
-        default="calm2_chat",
+        default="elyza_instruct",
         metadata={"help": "lookup template.py"},
     )
     use_flash_attention_2: bool = field(
@@ -162,12 +165,19 @@ class ScriptArguments:
     report_to: str = field(
         default=None,
     )
-
+    long_lora: bool = field(
+        default=False,
+    )
+    use_full_attn: bool = field(
+        default=True,
+        metadata={"help": "Whether to use plain, full-attention for training."},
+    )
 
 parser = HfArgumentParser(ScriptArguments)
 script_args = parser.parse_args_into_dataclasses()[0]
 
 instruct_template = templates_lookup.get(script_args.prompt_format)
+
 
 def find_all_linear_names(target_model):
     # https://note.com/npaka/n/na506c63b8cc9#260d93c9-2984-4a34-8118-8f68d64655b6
@@ -207,14 +217,81 @@ def create_and_prepare_model(args):
     # require flash-attn or torch 2.1 later
     attn_impl = "flash_attention_2" if args.use_flash_attention_2 else 'sdpa'
 
+    config = AutoConfig.from_pretrained(args.base_model)
+    if args.long_lora and (config.model_type == "gpt-neox" or config.model_type == "llama"):
+        print('with long_lora')
+        orig_rope_scaling = getattr(config, "rope_scaling", None)
+        if orig_rope_scaling is None:
+            orig_rope_scaling = {"factor": 1}
+        orig_rope_scaling_factor = orig_rope_scaling["factor"] if "factor" in orig_rope_scaling.keys() else 1
+        orig_ctx_len = getattr(config, "max_position_embeddings", None)
+        if orig_ctx_len is not None:
+            print('max_position_embeddings:', orig_ctx_len)
+            orig_ctx_len *= orig_rope_scaling_factor
+            if args.max_seq_length > orig_ctx_len:
+                scaling_factor = float(math.ceil(args.max_seq_length / orig_ctx_len))
+                print('scaling_factor:', scaling_factor)
+                config.rope_scaling = {"type": "linear", "factor": scaling_factor}
+                if config.model_type == "gpt-neox":
+                    print("modify long tokens: gpt-neox")
+                    # https://github.com/dvlab-research/LongLoRA/blob/main/gptneox_attn_replace.py
+                    from gptneox_attn_replace import replace_gpt_neox_attn
+                    replace_gpt_neox_attn(args.use_flash_attention_2, args.use_full_attn)
+                elif config.model_type == "llama":
+                    print("modify long tokens: llama")
+                    # https://github.com/dvlab-research/LongLoRA/blob/main/llama_attn_replace_sft.py
+                    from llama_attn_replace_sft import replace_llama_attn
+                    replace_llama_attn(args.use_flash_attention_2, args.use_full_attn)
+                config.max_position_embeddings = args.max_seq_length
+                config.save_pretrained(args.output_dir)
+
+    if bool(re.match(r'.*japanese-stablelm.*alpha.*', script_args.base_model)):
+        print("ja-stablelm-alpha")
+        from transformers import LlamaTokenizer
+        tokenizer = LlamaTokenizer.from_pretrained(
+            "novelai/nerdstash-tokenizer-v1",
+            use_fast=False,  # lm-evaluate scripts use_fast=False
+            trust_remote_code=True,
+            additional_special_tokens=['▁▁']
+        )
+        print('nai tokenizer loaded')
+    elif script_args.base_model.startswith(("rinna/", "line-corporation/japanese-large")):
+        tokenizer = AutoTokenizer.from_pretrained(
+            script_args.base_model,
+            use_fast=False,
+        )
+        print('use_fast=False tokenizer loaded')
+    else:
+        tokenizer = AutoTokenizer.from_pretrained(
+            script_args.base_model, trust_remote_code=True,
+        )
+
+    if script_args.base_model.startswith("matsuo-lab/"):
+        tokenizer.eos_token_id = 0
+        tokenizer.pad_token_id = 1
+        tokenizer.eos_token = tokenizer.decode(tokenizer.eos_token_id)
+        tokenizer.pad_token = tokenizer.decode(tokenizer.pad_token_id)
+
+    if getattr(tokenizer, "pad_token", None) is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    print("=" * 80)
+    print(tokenizer.eos_token_id, tokenizer.eos_token)
+    print(tokenizer.bos_token_id, tokenizer.bos_token)
+    print(tokenizer.pad_token_id, tokenizer.pad_token)
+    print(tokenizer.unk_token_id, tokenizer.unk_token)
+    print("=" * 80)
+
     model = AutoModelForCausalLM.from_pretrained(
         args.base_model,
-        quantization_config=bnb_config,
+        quantization_config=bnb_config, # Set RoPE scaling factor
+        config=config,
         device_map=device_map,
         use_auth_token=True,
         attn_implementation=attn_impl,
         trust_remote_code=True,
     )
+
 
     if script_args.base_model.startswith("meta-llama/Llama-2"):
         # check: https://github.com/huggingface/transformers/pull/24906
@@ -257,44 +334,8 @@ def create_and_prepare_model(args):
         fan_in_fan_out=fan_in_fan_out
     )
 
-    if bool(re.match(r'.*japanese-stablelm.*alpha.*', script_args.base_model)):
-        print("ja-stablelm-alpha")
-        from transformers import LlamaTokenizer
-        tokenizer = LlamaTokenizer.from_pretrained(
-            "novelai/nerdstash-tokenizer-v1",
-            use_fast=False,  # lm-evaluate scripts use_fast=False
-            trust_remote_code=True,
-            additional_special_tokens=['▁▁']
-        )
-        print('nai tokenizer loaded')
-    elif script_args.base_model.startswith(("rinna/", "line-corporation/japanese-large")):
-        tokenizer = AutoTokenizer.from_pretrained(
-            script_args.base_model,
-            use_fast=False,
-        )
-        print('use_fast=False tokenizer loaded')
-    else:
-        tokenizer = AutoTokenizer.from_pretrained(
-            script_args.base_model, trust_remote_code=True,
-        )
-
-    if script_args.base_model.startswith("matsuo-lab/"):
-        tokenizer.eos_token_id = 0
-        tokenizer.pad_token_id = 1
-        tokenizer.eos_token = tokenizer.decode(tokenizer.eos_token_id)
-        tokenizer.pad_token = tokenizer.decode(tokenizer.pad_token_id)
-
     model.config.eos_token_id = tokenizer.eos_token_id
     model.config.bos_token_id = tokenizer.bos_token_id
-    if getattr(tokenizer, "pad_token", None) is None:
-        tokenizer.pad_token = tokenizer.eos_token
-
-    print("=" * 80)
-    print(tokenizer.eos_token_id, tokenizer.eos_token)
-    print(tokenizer.bos_token_id, tokenizer.bos_token)
-    print(tokenizer.pad_token_id, tokenizer.pad_token)
-    print(tokenizer.unk_token_id, tokenizer.unk_token)
-    print("=" * 80)
 
     return model, peft_config, tokenizer
 
@@ -468,7 +509,7 @@ if script_args.only_instruct:
     from trl import DataCollatorForCompletionOnlyLM
     # We added context here: "\n". This is enough for this tokenizer
     # https://huggingface.co/docs/trl/sft_trainer#using-tokenids-directly-for-responsetemplate
-    if instruct_template.response_prefix.startswith("#"):
+    if instruct_template.response_prefix.startswith(("#", "[")):
         response_template_with_context = "\n" + instruct_template.response_prefix
         response_template_ids = tokenizer.encode(response_template_with_context, add_special_tokens=False)[2:]
     elif instruct_template.response_prefix.endswith(" "):
@@ -484,6 +525,7 @@ neftune_noise_alpha = script_args.neftune_noise_alpha
 if neftune_noise_alpha <= 0:
     neftune_noise_alpha = None
 
+
 trainer = trainer_class(
     model=model,
     train_dataset=dataset,
@@ -496,6 +538,8 @@ trainer = trainer_class(
     neftune_noise_alpha=neftune_noise_alpha,
     data_collator=collator,
 )
+if script_args.long_lora:
+    [p.requires_grad_() for n, p in trainer.model.named_parameters() if any([k in n for k in ["embed", "norm"]])]
 
 trainer.train()
 output_dir = os.path.join(script_args.output_dir, "final_checkpoints")

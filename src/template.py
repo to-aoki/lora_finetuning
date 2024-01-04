@@ -6,7 +6,7 @@ DEFAULT_INPUT_TEMPLATE = "### Instruction:\n{}\n### Input:\n{}\n"
 DEFAULT_NO_INPUT_TEMPLATE = "### Instruction:\n{}\n"
 DEFAULT_CONVERSATION_SYS = DEFAULT_NO_INPUT_TEMPLATE
 DEFAULT_CONVERSATION_TEMPLATE = DEFAULT_NO_INPUT_TEMPLATE
-DEFAULT_RESPONSE_RETURN = ""
+
 
 class InputTemplate:
     def __init__(
@@ -18,7 +18,6 @@ class InputTemplate:
         conversation_sys=DEFAULT_CONVERSATION_SYS,
         conversation_template=DEFAULT_CONVERSATION_TEMPLATE,
         response_prefix=DEFALUT_RESPONSE_PREFIX,
-        response_return=DEFAULT_RESPONSE_RETURN,
     ):
         self.bos_token = bos_token
         self.eos_token = eos_token
@@ -27,17 +26,16 @@ class InputTemplate:
         self.conversation_sys = conversation_sys
         self.conversation_template = conversation_template
         self.response_prefix = response_prefix
-        self.response_return = response_return
 
     def build_instruct(self, example):
         output_texts = []
         for i in range(len(example['instruction'])):
             if example['input'][i]:
-                text = self.bos_token + self.input_template.format(
-                    example['instruction'][i], example['input'][i]) + self.response_prefix + example['output'][i] + self.response_return + self.eos_token
+                instruct_prompt = self.input_template.format(example['instruction'][i], example['input'][i])
+                text = self.bos_token + instruct_prompt + self.response_prefix + example['output'][i] + self.eos_token
             else:
-                text = self.bos_token + self.no_input_template.format(
-                    example['instruction'][i]) + self.response_prefix + example['output'][i] + self.response_return + self.eos_token
+                instruct_prompt = self.no_input_template.format(example['instruction'][i])
+                text = self.bos_token + instruct_prompt + self.response_prefix + example['output'][i] + self.eos_token
             output_texts.append(text)
         return output_texts
 
@@ -49,8 +47,8 @@ class InputTemplate:
             if define_sys is not None:
                 template = template.format(define_sys, "{}")
             for e in episodes:
-                text = (self.bos + template.format(e['instruction']) +
-                        self.response_prefix + e['output'] + self.response_return + self.eos_token)
+                instruction_prompt = template.format(e['instruction'])
+                text = self.bos + instruction_prompt + self.response_prefix + e['output'] + self.eos_token
                 template = self.conversation_template
                 examples.append(text)
             carriage_return = '\n'
@@ -93,7 +91,7 @@ templates_lookup = {
         response_prefix="[/INST]\n"
     ),
     "elyza_instruct": InputTemplate(
-        input_template="[INST] <<SYS>>\nあなたは誠実で優秀な日本人のアシスタントです。\n<</SYS>>\n\n{}\n｛｝",
+        input_template="[INST] <<SYS>>\nあなたは誠実で優秀な日本人のアシスタントです。\n<</SYS>>\n\n{}\n{}",
         no_input_template="[INST] <<SYS>>\nあなたは誠実で優秀な日本人のアシスタントです。\n<</SYS>>\n\n{}",
         conversation_sys="[INST] <<SYS>>\nあなたは誠実で優秀な日本人のアシスタントです。\n<</SYS>>\n\n{}",
         conversation_template="[INST] {}",
@@ -104,14 +102,14 @@ templates_lookup = {
         no_input_template="USER: {}\n",
         conversation_sys="USER: {}\n",
         conversation_template="USER: {}\n",
-        response_prefix="ASSISTANT: "
+        response_prefix="ASSISTANT: ",
     ),
     "youri_chat": InputTemplate(
         input_template="設定: ｛｝\nユーザー: {}\n",
         no_input_template="ユーザー: {}\n",
         conversation_sys="ユーザー: {}\n",
         conversation_template="設定: ｛｝\nユーザー: {}\n",
-        response_prefix="システム: "
+        response_prefix="システム: ",
     ),
     "deepseek_coder": InputTemplate(
         no_input_template="You are an AI programming assistant, utilizing the DeepSeek Coder model, developed by DeepSeek Company, and you only answer questions related to computer science. For politically sensitive questions, security and privacy issues, and other non-computer science questions, you will refuse to answer.\n### Instruction:\n{}\n",
