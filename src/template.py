@@ -30,16 +30,25 @@ class InputTemplate:
     def build_instruct(self, example):
         full_instructions = []
         instructions = []
-        for i in range(len(example['instruction'])):
-            response = example['output'][i] + self.eos_token
-            if example['input'][i]:
-                instruct_prompt = self.input_template.format(example['instruction'][i], example['input'][i])
-                instruct = self.bos_token + instruct_prompt + self.response_prefix
-            else:
+        if 'input ' in example:
+            for i in range(len(example['instruction'])):
+                response = example['output'][i] + self.eos_token
+                if example['input'][i]:
+                    instruct_prompt = self.input_template.format(example['instruction'][i], example['input'][i])
+                    instruct = self.bos_token + instruct_prompt + self.response_prefix
+                else:
+                    instruct_prompt = self.no_input_template.format(example['instruction'][i])
+                    instruct = self.bos_token + instruct_prompt + self.response_prefix
+                full_instructions.append(instruct + response)
+                instructions.append(instruct)
+        else:
+            for i in range(len(example['instruction'])):
+                response = example['output'][i] + self.eos_token
                 instruct_prompt = self.no_input_template.format(example['instruction'][i])
                 instruct = self.bos_token + instruct_prompt + self.response_prefix
-            full_instructions.append(instruct + response)
-            instructions.append(instruct)
+                full_instructions.append(instruct + response)
+                instructions.append(instruct)
+
         return full_instructions, instructions
 
     def build_mutil_turn(self, instruction_histories, define_sys=None):
