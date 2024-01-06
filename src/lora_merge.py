@@ -15,12 +15,13 @@
 
 # origin: https://gist.github.com/younesbelkada/9f7f75c94bdc1981c8ca5cc937d4a4da
 
+import os
 from dataclasses import dataclass, field
 from typing import Optional
 
 import torch
-from peft import AutoPeftModelForCausalLM
-from transformers import AutoTokenizer, HfArgumentParser
+from peft import AutoPeftModelForCausalLM, PeftModel
+from transformers import AutoTokenizer, HfArgumentParser, AutoModelForCausalLM, AutoConfig
 
 
 @dataclass
@@ -34,13 +35,41 @@ class ScriptArguments:
     safe_serialization: Optional[bool] = field(
         default=False,
     )
+    bf16: Optional[bool] = field(
+        default=True,
+        metadata={"help": "Enables bf16 training."},
+    )
+    base_model: Optional[str] = field(
+        default=None,
+    )
+    base_config_path: Optional[str] = field(
+        default=None,
+    )
 
 
 parser = HfArgumentParser(ScriptArguments)
 script_args = parser.parse_args_into_dataclasses()[0]
 
-model = AutoPeftModelForCausalLM.from_pretrained(
-    script_args.merge_target_path, device_map="auto", torch_dtype=torch.bfloat16)
+if script_args.base_model is not None and script_args.base_config_path is not None:
+    config = AutoConfig.from_pretrained(script_args.base_config_path)
+    base_model = AutoModelForCausalLM.from_pretrained(
+        script_args.base_model,
+        config=config,
+        torch_dtype=torch.bfloat16 if script_args.bf16 else torch.float16,
+        device_map="auto",
+    )
+    model = PeftModel.from_pretrained(
+        base_model,
+        script_args.merge_target_path,
+        device_map="auto",
+        torch_dtype=torch.bfloat16 if script_args.bf16 else torch.float16,
+    )
+else:
+    model = AutoPeftModelForCausalLM.from_pretrained(
+        script_args.merge_target_path, device_map="auto",
+        torch_dtype=torch.bfloat16 if script_args.bf16 else torch.float16
+    )
+
 model = model.merge_and_unload()
 
 model.save_pretrained(script_args.output_path, safe_serialization=script_args.safe_serialization)

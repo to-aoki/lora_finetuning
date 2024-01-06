@@ -28,16 +28,19 @@ class InputTemplate:
         self.response_prefix = response_prefix
 
     def build_instruct(self, example):
-        output_texts = []
+        full_instructions = []
+        instructions = []
         for i in range(len(example['instruction'])):
+            response = example['output'][i] + self.eos_token
             if example['input'][i]:
                 instruct_prompt = self.input_template.format(example['instruction'][i], example['input'][i])
-                text = self.bos_token + instruct_prompt + self.response_prefix + example['output'][i] + self.eos_token
+                instruct = self.bos_token + instruct_prompt + self.response_prefix
             else:
                 instruct_prompt = self.no_input_template.format(example['instruction'][i])
-                text = self.bos_token + instruct_prompt + self.response_prefix + example['output'][i] + self.eos_token
-            output_texts.append(text)
-        return output_texts
+                instruct = self.bos_token + instruct_prompt + self.response_prefix
+            full_instructions.append(instruct + response)
+            instructions.append(instruct)
+        return full_instructions, instructions
 
     def build_mutil_turn(self, instruction_histories, define_sys=None):
         conversations = []
@@ -84,16 +87,16 @@ templates_lookup = {
         response_prefix="### 応答:\n"
     ),
     "llama2_short": InputTemplate(
-        input_template="[INST] {}\n{}",
-        no_input_template="[INST] {}",
-        conversation_sys="[INST] {}",
-        conversation_template="[INST] {}",
+        input_template="[INST] {}\n{} ",
+        no_input_template="[INST] {} ",
+        conversation_sys="[INST] {} ",
+        conversation_template="[INST] {} ",
         response_prefix="[/INST]\n"
     ),
     "elyza_instruct": InputTemplate(
-        input_template="[INST] <<SYS>>\nあなたは誠実で優秀な日本人のアシスタントです。\n<</SYS>>\n\n{}\n{}",
-        no_input_template="[INST] <<SYS>>\nあなたは誠実で優秀な日本人のアシスタントです。\n<</SYS>>\n\n{}",
-        conversation_sys="[INST] <<SYS>>\nあなたは誠実で優秀な日本人のアシスタントです。\n<</SYS>>\n\n{}",
+        input_template="[INST] <<SYS>>\nあなたは誠実で優秀な日本人のアシスタントです。\n<</SYS>>\n\n{}\n{} ",
+        no_input_template="[INST] <<SYS>>\nあなたは誠実で優秀な日本人のアシスタントです。\n<</SYS>>\n\n{} ",
+        conversation_sys="[INST] <<SYS>>\nあなたは誠実で優秀な日本人のアシスタントです。\n<</SYS>>\n\n{} ",
         conversation_template="[INST] {}",
         response_prefix="[/INST]\n"
     ),
