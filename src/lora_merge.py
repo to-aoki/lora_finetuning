@@ -58,6 +58,9 @@ if script_args.base_model is not None and script_args.base_config_path is not No
         torch_dtype=torch.bfloat16 if script_args.bf16 else torch.float16,
         device_map="auto",
     )
+    trainable_params = os.path.join(script_args.merge_target_path, "trainable_params.bin")
+    if os.path.isfile(trainable_params):
+        base_model.load_state_dict(torch.load(trainable_params, map_location=base_model.device), strict=False)
     model = PeftModel.from_pretrained(
         base_model,
         script_args.merge_target_path,

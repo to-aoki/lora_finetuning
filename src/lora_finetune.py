@@ -38,14 +38,12 @@ from transformers import (
     PreTrainedModel
 )
 from transformers.trainer_utils import EvalPrediction
-from transformers.trainer_callback import TrainerCallback
+from transformers.trainer_callback import TrainerCallback, TrainerState, TrainerControl
 
 import bitsandbytes as bnb
 from peft import LoraConfig
 from trl import SFTTrainer
 from template import templates_lookup
-
-os.environ['WANDB_DISABLED'] = 'true'  # be removed in v5
 
 # This example lora fine-tunes Llama v2 model on Jetson AGX Orin
 # Versions used:
@@ -516,8 +514,32 @@ if neftune_noise_alpha <= 0:
     neftune_noise_alpha = None
 
 
+callbacks = []
+
+if script_args.long_lora:
+    class SavePeftModelCallback(TrainerCallback):
+        def on_save(
+            self,
+            args: TrainingArguments,
+            state: TrainerState,
+            control: TrainerControl,
+            **kwargs,
+        ):
+            checkpoint_folder = os.path.join(args.output_dir, f"checkpoint-{state.global_step}")
+            modules_to_save = ["embed", "norm"]
+            state_dict = kwargs["model"].state_dict()
+            to_save = {}
+            for key, value in state_dict.items():
+                if any(module_name in key for module_name in modules_to_save):
+                    to_save[key.replace("base_model.model.", "")] = value
+            torch.save(to_save, os.path.join(checkpoint_folder, "trainable_params.bin"))
+            return control
+    callbacks = [SavePeftModelCallback]
+
+
 trainer = OnlyInstructSFTTrainer(
     model=model,
+    callbacks=callbacks,
     train_dataset=dataset,
     peft_config=peft_config,
     max_seq_length=script_args.max_seq_length,
@@ -530,11 +552,27 @@ trainer = OnlyInstructSFTTrainer(
     only_instruction=script_args.only_instruct,
 )
 
-[p.requires_grad_() for n, p in trainer.model.named_parameters() if any([k in n for k in ["embed", "norm"]])]
+if script_args.long_lora:
+    [p.requires_grad_() for n, p in trainer.model.named_parameters() if any([k in n for k in ["embed", "norm"]])]
+
+class CastOutputToFloat(nn.Sequential):
+    def forward(self, x):
+        return super().forward(x).to(torch.float32)
+
+model.lm_head = CastOutputToFloat(model.lm_head)
+
 
 trainer.train()
 trainer.save_state()
 output_dir = os.path.join(script_args.output_dir, "final_checkpoints")
 trainer.model.save_pretrained(output_dir)
-trainer.save_model(output_dir)
 tokenizer.save_pretrained(output_dir)
+
+if script_args.long_lora:
+    modules_to_save = ["embed", "norm"]
+    state_dict = model.state_dict()
+    to_save = {}
+    for key, value in state_dict.items():
+        if any(module_name in key for module_name in modules_to_save):
+            to_save[key.replace("base_model.model.", "")] = value
+    torch.save(to_save, os.path.join(output_dir, "trainable_params.bin"))
