@@ -280,7 +280,7 @@ def create_and_prepare_model(args):
 
     model = AutoModelForCausalLM.from_pretrained(
         args.base_model,
-        quantization_config=bnb_config, # Set RoPE scaling factor
+        quantization_config=bnb_config,
         config=config,
         device_map=device_map,
         use_auth_token=True,
@@ -503,7 +503,14 @@ if not script_args.add_bos_token:
 instruct_template.bos_token = bos_token
 instruct_template.eos_token = eos_token
 
-dataset = load_dataset(script_args.dataset_name, split="train")
+if script_args.dataset_name.endswith('.json'):
+    dataset = load_dataset(
+        'json',
+        data_files=script_args.dataset_name,
+        split = "train",
+    )
+else:
+    dataset = load_dataset(script_args.dataset_name, split="train")
 if script_args.dataset_name == 'sakusakumura/databricks-dolly-15k-ja-scored':
     dataset = dataset.filter(lambda example: example["bertscore"]["f1"] > 0.88)
 dataset = dataset.shuffle(seed=42)
