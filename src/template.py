@@ -35,20 +35,19 @@ class InputTemplate:
         instructions = []
         if 'input ' in example:
             for i in range(len(example['instruction'])):
-                response = example['output'][i] + self.eos_token
+                response = example['output'][i] + self.response_suffix + self.eos_token
                 if example['input'][i]:
                     instruct_prompt = self.input_template.format(example['instruction'][i], example['input'][i])
-                    instruct = self.bos_token + instruct_prompt + self.response_suffix + self.response_prefix
                 else:
                     instruct_prompt = self.no_input_template.format(example['instruction'][i])
-                    instruct = self.bos_token + instruct_prompt + self.response_suffix + self.response_prefix
+                instruct = self.bos_token + instruct_prompt + self.response_prefix
                 full_instructions.append(instruct + response)
                 instructions.append(instruct)
         else:
             for i in range(len(example['instruction'])):
-                response = example['output'][i] + self.eos_token
+                response = example['output'][i] + self.response_suffix + self.eos_token
                 instruct_prompt = self.no_input_template.format(example['instruction'][i])
-                instruct = self.bos_token + instruct_prompt + self.response_suffix + self.response_prefix
+                instruct = self.bos_token + instruct_prompt + self.response_prefix
                 full_instructions.append(instruct + response)
                 instructions.append(instruct)
 
@@ -57,17 +56,19 @@ class InputTemplate:
     def build_mutil_turn(self, instruction_histories, define_sys=None):
         conversations = []
         for episodes in instruction_histories:
-            examples = []
+            full_instructions = []
+            instructions = []
             template = self.conversation_sys
             if define_sys is not None:
                 template = template.format(define_sys, "{}")
             for e in episodes:
+                response = e['output'] + self.response_suffix + self.eos_token
                 instruction_prompt = template.format(e['instruction'])
-                text = self.bos + instruction_prompt + self.response_prefix + e['output'] + self.response_suffix + self.eos_token
+                instruct = self.bos + instruction_prompt + self.response_prefix
                 template = self.conversation_template
-                examples.append(text)
-            carriage_return = '\n'
-            conversations.append(carriage_return.join(examples))
+                full_instructions.append(instruct + response)
+                instructions.append(instruct)
+            conversations.append(full_instructions, instructions)
         return conversations
 
     def build_inference(self, instruction, input=None):
@@ -126,11 +127,18 @@ templates_lookup = {
         no_input_template="You are an AI programming assistant, utilizing the DeepSeek Coder model, developed by DeepSeek Company, and you only answer questions related to computer science. For politically sensitive questions, security and privacy issues, and other non-computer science questions, you will refuse to answer.\n### Instruction:\n{}\n",
     ),
     "phi2-instruct": InputTemplate(
-        input_template="Instruct: {}.\n",
+        input_template="Instruct: {}.\nInput: {}.\n",
         no_input_template="Instruct: {}.\n",
         conversation_sys="Instruct: {}.\n",
         conversation_template="Instruct: {}.\n",
         response_prefix="Output: ",
         response_suffix=".",
+    ),
+    "phi2-chat": InputTemplate(
+        input_template="Alice: {}\n{}\n",
+        no_input_template="Alice: {}\n",
+        conversation_sys="Alice: {}\n",
+        conversation_template="Alice: {}\n",
+        response_prefix="Bob: {}",
     )
 }

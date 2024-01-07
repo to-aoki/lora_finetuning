@@ -168,6 +168,9 @@ class ScriptArguments:
         default=False,
         metadata={"help": "Whether to use plain, full-attention for training."},
     )
+    dolly_ja_score: float = field(
+        default=0.9,
+    )
 
 parser = HfArgumentParser(ScriptArguments)
 script_args = parser.parse_args_into_dataclasses()[0]
@@ -324,6 +327,7 @@ def create_and_prepare_model(args):
             ]
         else:
             target_modules = find_all_linear_names(model)
+
     if model.config.model_type == 'gpt2':
         fan_in_fan_out = True
 
@@ -348,9 +352,9 @@ def create_and_prepare_model(args):
 model, peft_config, tokenizer = create_and_prepare_model(script_args)
 model.config.use_cache = False
 
-gradient_checkpointing = True
+gradient_checkpointing = script_args.gradient_checkpointing
 if model.config.model_type == 'phi-msft':
-    # too large (2023-01-07)
+    # too large (2024-01-07)
     gradient_checkpointing = False
 
 training_arguments = TrainingArguments(
@@ -461,9 +465,9 @@ class OnlyInstructSFTTrainer(SFTTrainer):
     ):
 
         def tokenize(element):
-            instruct_pairs = formatting_func(element)
+            formatted = formatting_func(element)
             outputs = tokenizer(
-                instruct_pairs[0],
+                formatted[0],
                 add_special_tokens=add_special_tokens,
                 truncation=True,
                 padding=False,
@@ -472,7 +476,7 @@ class OnlyInstructSFTTrainer(SFTTrainer):
             )
             if self.only_instruction:
                 instruct = tokenizer(
-                    instruct_pairs[1],
+                    formatted[1],
                     add_special_tokens=add_special_tokens,
                     truncation=True,
                     padding=False,
@@ -528,7 +532,7 @@ if script_args.dataset_name.endswith('.json'):
 else:
     dataset = load_dataset(script_args.dataset_name, split="train")
 if script_args.dataset_name == 'sakusakumura/databricks-dolly-15k-ja-scored':
-    dataset = dataset.filter(lambda example: example["bertscore"]["f1"] > 0.9)
+    dataset = dataset.filter(lambda example: example["bertscore"]["f1"] > script_args.dolly_ja_score)
 dataset = dataset.shuffle(seed=42)
 
 
