@@ -41,6 +41,9 @@ class ScriptArguments:
     use_flash_attention_2: Optional[bool] = field(
         default=False,
     )
+    use_sdpa: Optional[bool] = field(
+        default=True,
+    )
     bf16: Optional[bool] = field(
         default=True,
     )
@@ -57,7 +60,12 @@ script_args = parser.parse_args_into_dataclasses()[0]
 
 instruct_template = templates_lookup.get(script_args.prompt_format)
 
-attn_impl = "flash_attention_2" if script_args.use_flash_attention_2 else 'sdpa'
+# require flash-attn or torch 2.1 later
+attn_impl = None
+if script_args.use_sdpa:
+    attn_impl = "sdpa"
+if script_args.use_flash_attention_2:
+    attn_impl = "flash_attention_2"
 
 if script_args.base_model:
     model = AutoModelForCausalLM.from_pretrained(
@@ -154,6 +162,7 @@ def generate(prompt):
         outputs[0][input_length:], skip_special_tokens=True)
 
     return output_str
+
 
 text = instruct_template.build_inference("pythonでHello,worldと出力するコードを記述してください。")
 print(text, generate(text))

@@ -8,6 +8,7 @@ DEFAULT_CONVERSATION_SYS = DEFAULT_NO_INPUT_TEMPLATE
 DEFAULT_CONVERSATION_TEMPLATE = DEFAULT_NO_INPUT_TEMPLATE
 DEFAULT_RESPONSE_SUFFIX = ""
 
+
 class InputTemplate:
     def __init__(
         self,
@@ -79,10 +80,6 @@ class InputTemplate:
         return text
 
 
-DEFALUT_RESPONSE_PREFIX = "### Response:\n"
-DEFAULT_INPUT_TEMPLATE = "### Instruction:\n{}\n### Input:\n{}\n" + DEFALUT_RESPONSE_PREFIX
-DEFAULT_NO_INPUT_TEMPLATE = "### Instruction:\n{}\n" + DEFALUT_RESPONSE_PREFIX
-DEFAULT_CONVERSATION_TEMPLATE = DEFAULT_NO_INPUT_TEMPLATE
 
 templates_lookup = {
     "alpaca_short": InputTemplate(),
@@ -130,10 +127,10 @@ templates_lookup = {
         response_suffix="\n",
     ),
     "phi2-instruct": InputTemplate(
-        input_template="Instruct: {}.",
-        no_input_template="Instruct: {}.",
-        conversation_sys="Instruct: {}.",
-        conversation_template="Instruct: {}.",
+        input_template="Instruct: {}.\n",
+        no_input_template="Instruct: {}.\n",
+        conversation_sys="Instruct: {}.\n",
+        conversation_template="Instruct: {}.\n",
         response_prefix="Output: ",
         response_suffix=".",
     )
