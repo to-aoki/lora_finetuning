@@ -149,6 +149,9 @@ class ScriptArguments:
     use_flash_attention_2: bool = field(
         default=False,
     )
+    use_sdpa: bool = field(
+        default=True,
+    )
     target_all_layer: bool = field(
         default=False,
     )
@@ -208,9 +211,13 @@ def create_and_prepare_model(args):
     device_map = "auto"
 
     # require flash-attn or torch 2.1 later
-    attn_impl = "flash_attention_2" if args.use_flash_attention_2 else 'sdpa'
+    attn_impl = None
+    if args.use_sdpa:
+        attn_impl = "sdpa"
+    if args.use_flash_attention_2:
+        attn_impl = "flash_attention_2"
 
-    config = AutoConfig.from_pretrained(args.base_model)
+    config = AutoConfig.from_pretrained(args.base_model, trust_remote_code=True)
     if args.long_lora and (config.model_type == "gpt-neox" or config.model_type == "llama"):
         print('with long_lora')
         orig_rope_scaling = getattr(config, "rope_scaling", None)
@@ -306,6 +313,8 @@ def create_and_prepare_model(args):
                 "gate_proj",
                 "up_proj",
             ]
+        elif model.config.model_type == 'phi-msft':
+            target_modules = ['lm_head.linear', 'transformer.embd.wte']
         elif model.config.model_type == 'gpt2':
             # llm-jp
             target_modules = [
@@ -336,6 +345,14 @@ def create_and_prepare_model(args):
     return model, peft_config, tokenizer
 
 
+model, peft_config, tokenizer = create_and_prepare_model(script_args)
+model.config.use_cache = False
+
+gradient_checkpointing = True
+if model.config.model_type == 'phi-msft':
+    # too large (2023-01-07)
+    gradient_checkpointing = False
+
 training_arguments = TrainingArguments(
     output_dir=script_args.output_dir,
     per_device_train_batch_size=script_args.per_device_train_batch_size,
@@ -353,12 +370,9 @@ training_arguments = TrainingArguments(
     weight_decay=script_args.weight_decay,
     group_by_length=script_args.group_by_length,
     lr_scheduler_type=script_args.lr_scheduler_type,
-    gradient_checkpointing=True,
+    gradient_checkpointing=gradient_checkpointing,
     report_to=script_args.report_to
 )
-
-model, peft_config, tokenizer = create_and_prepare_model(script_args)
-model.config.use_cache = False
 
 
 class DataCollatorForCompletion:
@@ -499,6 +513,8 @@ eos_token = tokenizer.eos_token
 bos_token = tokenizer.bos_token
 if not script_args.add_bos_token:
     bos_token = ''
+if eos_token == bos_token:
+    bos_token = ''
 
 instruct_template.bos_token = bos_token
 instruct_template.eos_token = eos_token
@@ -507,12 +523,12 @@ if script_args.dataset_name.endswith('.json'):
     dataset = load_dataset(
         'json',
         data_files=script_args.dataset_name,
-        split = "train",
+        split="train",
     )
 else:
     dataset = load_dataset(script_args.dataset_name, split="train")
 if script_args.dataset_name == 'sakusakumura/databricks-dolly-15k-ja-scored':
-    dataset = dataset.filter(lambda example: example["bertscore"]["f1"] > 0.88)
+    dataset = dataset.filter(lambda example: example["bertscore"]["f1"] > 0.9)
 dataset = dataset.shuffle(seed=42)
 
 

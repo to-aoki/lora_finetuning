@@ -51,11 +51,12 @@ parser = HfArgumentParser(ScriptArguments)
 script_args = parser.parse_args_into_dataclasses()[0]
 
 if script_args.base_model is not None and script_args.base_config_path is not None:
-    config = AutoConfig.from_pretrained(script_args.base_config_path)
+    config = None
+    if script_args.base_config_path is not None:
+        config = AutoConfig.from_pretrained(script_args.base_config_path)
     base_model = AutoModelForCausalLM.from_pretrained(
         script_args.base_model,
         config=config,
-        torch_dtype=torch.bfloat16 if script_args.bf16 else torch.float16,
         device_map="auto",
     )
     trainable_params = os.path.join(script_args.merge_target_path, "trainable_params.bin")
@@ -65,12 +66,10 @@ if script_args.base_model is not None and script_args.base_config_path is not No
         base_model,
         script_args.merge_target_path,
         device_map="auto",
-        torch_dtype=torch.bfloat16 if script_args.bf16 else torch.float16,
     )
 else:
     model = AutoPeftModelForCausalLM.from_pretrained(
         script_args.merge_target_path, device_map="auto",
-        torch_dtype=torch.bfloat16 if script_args.bf16 else torch.float16
     )
 
 model = model.merge_and_unload()

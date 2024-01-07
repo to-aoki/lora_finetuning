@@ -6,7 +6,7 @@ DEFAULT_INPUT_TEMPLATE = "### Instruction:\n{}\n### Input:\n{}\n"
 DEFAULT_NO_INPUT_TEMPLATE = "### Instruction:\n{}\n"
 DEFAULT_CONVERSATION_SYS = DEFAULT_NO_INPUT_TEMPLATE
 DEFAULT_CONVERSATION_TEMPLATE = DEFAULT_NO_INPUT_TEMPLATE
-
+DEFAULT_RESPONSE_SUFFIX = ""
 
 class InputTemplate:
     def __init__(
@@ -18,6 +18,7 @@ class InputTemplate:
         conversation_sys=DEFAULT_CONVERSATION_SYS,
         conversation_template=DEFAULT_CONVERSATION_TEMPLATE,
         response_prefix=DEFALUT_RESPONSE_PREFIX,
+        response_suffix=DEFAULT_RESPONSE_SUFFIX,
     ):
         self.bos_token = bos_token
         self.eos_token = eos_token
@@ -26,6 +27,7 @@ class InputTemplate:
         self.conversation_sys = conversation_sys
         self.conversation_template = conversation_template
         self.response_prefix = response_prefix
+        self.response_suffix = response_suffix
 
     def build_instruct(self, example):
         full_instructions = []
@@ -35,17 +37,17 @@ class InputTemplate:
                 response = example['output'][i] + self.eos_token
                 if example['input'][i]:
                     instruct_prompt = self.input_template.format(example['instruction'][i], example['input'][i])
-                    instruct = self.bos_token + instruct_prompt + self.response_prefix
+                    instruct = self.bos_token + instruct_prompt + self.response_suffix + self.response_prefix
                 else:
                     instruct_prompt = self.no_input_template.format(example['instruction'][i])
-                    instruct = self.bos_token + instruct_prompt + self.response_prefix
+                    instruct = self.bos_token + instruct_prompt + self.response_suffix + self.response_prefix
                 full_instructions.append(instruct + response)
                 instructions.append(instruct)
         else:
             for i in range(len(example['instruction'])):
                 response = example['output'][i] + self.eos_token
                 instruct_prompt = self.no_input_template.format(example['instruction'][i])
-                instruct = self.bos_token + instruct_prompt + self.response_prefix
+                instruct = self.bos_token + instruct_prompt + self.response_suffix + self.response_prefix
                 full_instructions.append(instruct + response)
                 instructions.append(instruct)
 
@@ -60,7 +62,7 @@ class InputTemplate:
                 template = template.format(define_sys, "{}")
             for e in episodes:
                 instruction_prompt = template.format(e['instruction'])
-                text = self.bos + instruction_prompt + self.response_prefix + e['output'] + self.eos_token
+                text = self.bos + instruction_prompt + self.response_prefix + e['output'] + self.response_suffix + self.eos_token
                 template = self.conversation_template
                 examples.append(text)
             carriage_return = '\n'
@@ -125,5 +127,14 @@ templates_lookup = {
     ),
     "deepseek_coder": InputTemplate(
         no_input_template="You are an AI programming assistant, utilizing the DeepSeek Coder model, developed by DeepSeek Company, and you only answer questions related to computer science. For politically sensitive questions, security and privacy issues, and other non-computer science questions, you will refuse to answer.\n### Instruction:\n{}\n",
+        response_suffix="\n",
     ),
+    "phi2-instruct": InputTemplate(
+        input_template="Instruct: {}.",
+        no_input_template="Instruct: {}.",
+        conversation_sys="Instruct: {}.",
+        conversation_template="Instruct: {}.",
+        response_prefix="Output: ",
+        response_suffix=".",
+    )
 }
