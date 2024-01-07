@@ -578,12 +578,6 @@ trainer = OnlyInstructSFTTrainer(
 if script_args.long_lora:
     [p.requires_grad_() for n, p in trainer.model.named_parameters() if any([k in n for k in ["embed", "norm"]])]
 
-class CastOutputToFloat(nn.Sequential):
-    def forward(self, x):
-        return super().forward(x).to(torch.float32)
-
-model.lm_head = CastOutputToFloat(model.lm_head)
-
 
 trainer.train()
 trainer.save_state()
