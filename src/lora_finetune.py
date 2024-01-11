@@ -266,7 +266,9 @@ def create_and_prepare_model(args):
         print('use_fast=False tokenizer loaded')
     else:
         tokenizer = AutoTokenizer.from_pretrained(
-            script_args.base_model, trust_remote_code=True,
+            script_args.base_model,
+            use_fast=True,
+            trust_remote_code=True,
         )
 
     if script_args.base_model.startswith("matsuo-lab/"):
@@ -515,10 +517,11 @@ class OnlyInstructSFTTrainer(SFTTrainer):
 
 eos_token = tokenizer.eos_token
 bos_token = tokenizer.bos_token
-if not script_args.add_bos_token:
-    bos_token = ''
 if eos_token == bos_token:
     bos_token = ''
+if not script_args.add_bos_token:
+    bos_token = ''
+
 
 instruct_template.bos_token = bos_token
 instruct_template.eos_token = eos_token

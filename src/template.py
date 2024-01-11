@@ -125,6 +125,7 @@ templates_lookup = {
     ),
     "deepseek_coder": InputTemplate(
         no_input_template="You are an AI programming assistant, utilizing the DeepSeek Coder model, developed by DeepSeek Company, and you only answer questions related to computer science. For politically sensitive questions, security and privacy issues, and other non-computer science questions, you will refuse to answer.\n### Instruction:\n{}\n",
+        response_suffix="\n",
     ),
     "phi2-instruct": InputTemplate(
         input_template="Instruct: {}.\nInput: {}.\n",
@@ -139,6 +140,7 @@ templates_lookup = {
         no_input_template="Alice: {}\n",
         conversation_sys="Alice: {}\n",
         conversation_template="Alice: {}\n",
-        response_prefix="Bob: {}",
+        response_prefix="Bob: ",
+        response_suffix="\n",
     )
 }

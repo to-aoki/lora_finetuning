@@ -32,9 +32,6 @@ class ScriptArguments:
     base_model: str = field(
         default=None,
     )
-    add_special_tokens: Optional[bool] = field(
-        default=True,
-    )
     add_bos_token: Optional[bool] = field(
         default=True,
     )
@@ -92,7 +89,6 @@ else:
         trust_remote_code=True)
     model.cuda()
 
-add_special_tokens = script_args.add_special_tokens
 if script_args.use_nai_tokenizer:
     # stablelm alpha tokenizer setting
     from transformers import LlamaTokenizer
@@ -101,7 +97,6 @@ if script_args.use_nai_tokenizer:
         additional_special_tokens=['▁▁'],
         use_fast=False,
     )
-    add_special_tokens = False
 else:
     print("fast tokenizer:", not script_args.slow_tokenizer)
     tokenizer = AutoTokenizer.from_pretrained(
@@ -110,35 +105,14 @@ else:
     )
 
 if getattr(tokenizer, "pad_token", None) is None:
-    tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.pad_token = tokenizer.unk_token
 
 eos_token = tokenizer.eos_token
 bos_token = tokenizer.bos_token
 if eos_token == bos_token:
     bos_token = ''
-add_special_tokens = script_args.add_special_tokens
-test_message = '今日もいい天気ですね'
-test_ids = tokenizer(test_message, add_special_tokens=add_special_tokens)
-
-if add_special_tokens:
-    if test_ids['input_ids'][-1] == tokenizer.eos_token_id:
-        print('without special tokens')
-        add_special_tokens = False
-    if test_ids['input_ids'][0] == tokenizer.bos_token_id:
-        bos_token = ''
-
 if not script_args.add_bos_token:
     bos_token = ''
-
-print("=" * 80)
-print(test_message)
-print(test_ids)
-print('bos_token:', bos_token)
-print('eos_token:', eos_token)
-print('add_special_tokens:', add_special_tokens)
-print(bos_token + test_message + eos_token,
-      tokenizer(bos_token + test_message + eos_token, add_special_tokens=add_special_tokens))
-print("=" * 80)
 
 instruct_template.bos_token = bos_token
 instruct_template.eos_token = eos_token
@@ -146,7 +120,7 @@ instruct_template.eos_token = eos_token
 
 def generate(prompt):
     inputs = tokenizer(prompt, return_tensors='pt',
-                       add_special_tokens=add_special_tokens,
+                       add_special_tokens=False,
                        return_token_type_ids=False,  # is_trainable=False
                        ).to(model.device)
     input_length = inputs.input_ids.shape[1]
