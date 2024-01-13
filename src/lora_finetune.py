@@ -75,7 +75,6 @@ class ScriptArguments:
         }
     )
     dataset_name: Optional[str] = field(
-        # default="kunishou/databricks-dolly-15k-ja",
         default='sakusakumura/databricks-dolly-15k-ja-scored',
         metadata={"help": "The preference dataset to use."},
     )
@@ -136,9 +135,6 @@ class ScriptArguments:
         metadata={"help": "The output directory where the model predictions and checkpoints will be written."},
     )
     neftune_noise_alpha: Optional[float] = field(default=5.)
-    add_special_tokens: Optional[bool] = field(
-        default=True,
-    )
     add_bos_token: Optional[bool] = field(
         default=True,
     )
@@ -170,6 +166,12 @@ class ScriptArguments:
     )
     dolly_ja_score: float = field(
         default=0.9,
+    )
+    padding_side: str = field(
+        default="right",
+    )
+    with_unsloth: bool = field(
+        default=False,
     )
 
 parser = HfArgumentParser(ScriptArguments)
@@ -213,69 +215,137 @@ def create_and_prepare_model(args):
     # switch to `device_map = "auto"` for multi-GPU
     device_map = "auto"
 
-    # require flash-attn or torch 2.1 later
-    attn_impl = None
-    if args.use_sdpa:
-        attn_impl = "sdpa"
-    if args.use_flash_attention_2:
-        attn_impl = "flash_attention_2"
-
-    config = AutoConfig.from_pretrained(args.base_model, trust_remote_code=True)
-    if args.long_lora and (config.model_type == "gpt-neox" or config.model_type == "llama"):
-        print('with long_lora')
-        orig_rope_scaling = getattr(config, "rope_scaling", None)
-        if orig_rope_scaling is None:
-            orig_rope_scaling = {"factor": 1}
-        orig_rope_scaling_factor = orig_rope_scaling["factor"] if "factor" in orig_rope_scaling.keys() else 1
-        orig_ctx_len = getattr(config, "max_position_embeddings", None)
-        if orig_ctx_len is not None:
-            print('max_position_embeddings:', orig_ctx_len)
-            orig_ctx_len *= orig_rope_scaling_factor
-            if args.max_seq_length > orig_ctx_len:
-                scaling_factor = float(math.ceil(args.max_seq_length / orig_ctx_len))
-                print('scaling_factor:', scaling_factor)
-                config.rope_scaling = {"type": "linear", "factor": scaling_factor}
-                if config.model_type == "gpt-neox":
-                    print("modify long tokens: gpt-neox")
-                    # https://github.com/dvlab-research/LongLoRA/blob/main/gptneox_attn_replace.py
-                    from gptneox_attn_replace import replace_gpt_neox_attn
-                    replace_gpt_neox_attn(args.use_flash_attention_2, args.use_full_attn)
-                elif config.model_type == "llama":
-                    print("modify long tokens: llama")
-                    # https://github.com/dvlab-research/LongLoRA/blob/main/llama_attn_replace_sft.py
-                    from llama_attn_replace_sft import replace_llama_attn
-                    replace_llama_attn(args.use_flash_attention_2, args.use_full_attn)
-                config.max_position_embeddings = args.max_seq_length
-                config.save_pretrained(args.output_dir)
-
-    if bool(re.match(r'.*japanese-stablelm.*alpha.*', script_args.base_model)):
-        print("ja-stablelm-alpha")
-        from transformers import LlamaTokenizer
-        tokenizer = LlamaTokenizer.from_pretrained(
-            "novelai/nerdstash-tokenizer-v1",
-            use_fast=False,  # lm-evaluate scripts use_fast=False
-            trust_remote_code=True,
-            additional_special_tokens=['▁▁']
+    if script_args.with_unsloth:
+        from unsloth import FastLanguageModel
+        model, tokenizer = FastLanguageModel.from_pretrained(
+            model_name=args.base_model,
+            max_seq_length=args.max_seq_length,
+            dtype=None,
+            load_in_4bit=True,
         )
-        print('nai tokenizer loaded')
-    elif script_args.base_model.startswith(("rinna/", "line-corporation/japanese-large")):
-        tokenizer = AutoTokenizer.from_pretrained(
-            script_args.base_model,
-            use_fast=False,
-        )
-        print('use_fast=False tokenizer loaded')
+
     else:
-        tokenizer = AutoTokenizer.from_pretrained(
-            script_args.base_model,
-            use_fast=True,
+        # require flash-attn or torch 2.1 later
+        attn_impl = None
+        if args.use_sdpa:
+            attn_impl = "sdpa"
+        if args.use_flash_attention_2:
+            attn_impl = "flash_attention_2"
+
+        config = AutoConfig.from_pretrained(args.base_model, trust_remote_code=True)
+        if args.long_lora and (config.model_type == "gpt-neox" or config.model_type == "llama"):
+            print('with long_lora')
+            orig_rope_scaling = getattr(config, "rope_scaling", None)
+            if orig_rope_scaling is None:
+                orig_rope_scaling = {"factor": 1}
+            orig_rope_scaling_factor = orig_rope_scaling["factor"] if "factor" in orig_rope_scaling.keys() else 1
+            orig_ctx_len = getattr(config, "max_position_embeddings", None)
+            if orig_ctx_len is not None:
+                print('max_position_embeddings:', orig_ctx_len)
+                orig_ctx_len *= orig_rope_scaling_factor
+                if args.max_seq_length > orig_ctx_len:
+                    scaling_factor = float(math.ceil(args.max_seq_length / orig_ctx_len))
+                    print('scaling_factor:', scaling_factor)
+                    config.rope_scaling = {"type": "linear", "factor": scaling_factor}
+                    if config.model_type == "gpt-neox":
+                        print("modify long tokens: gpt-neox")
+                        # https://github.com/dvlab-research/LongLoRA/blob/main/gptneox_attn_replace.py
+                        from gptneox_attn_replace import replace_gpt_neox_attn
+                        replace_gpt_neox_attn(args.use_flash_attention_2, args.use_full_attn)
+                    elif config.model_type == "llama":
+                        print("modify long tokens: llama")
+                        # https://github.com/dvlab-research/LongLoRA/blob/main/llama_attn_replace_sft.py
+                        from llama_attn_replace_sft import replace_llama_attn
+                        replace_llama_attn(args.use_flash_attention_2, args.use_full_attn)
+                    config.max_position_embeddings = args.max_seq_length
+                    config.save_pretrained(args.output_dir)
+
+        if bool(re.match(r'.*japanese-stablelm.*alpha.*', script_args.base_model)):
+            print("ja-stablelm-alpha")
+            from transformers import LlamaTokenizer
+            tokenizer = LlamaTokenizer.from_pretrained(
+                "novelai/nerdstash-tokenizer-v1",
+                use_fast=False,  # lm-evaluate scripts use_fast=False
+                trust_remote_code=True,
+                additional_special_tokens=['▁▁']
+            )
+            print('nai tokenizer loaded')
+        elif script_args.base_model.startswith(("rinna/", "line-corporation/japanese-large")):
+            tokenizer = AutoTokenizer.from_pretrained(
+                script_args.base_model,
+                use_fast=False,
+            )
+            print('use_fast=False tokenizer loaded')
+        else:
+            tokenizer = AutoTokenizer.from_pretrained(
+                script_args.base_model,
+                use_fast=True,
+                trust_remote_code=True,
+            )
+
+        model = AutoModelForCausalLM.from_pretrained(
+            args.base_model,
+            quantization_config=bnb_config,
+            config=config,
+            device_map=device_map,
+            use_auth_token=True,
+            torch_dtype=torch.bfloat16 if script_args.bf16 else torch.float16,
+            attn_implementation=attn_impl,
             trust_remote_code=True,
         )
 
-    if script_args.base_model.startswith("matsuo-lab/"):
-        tokenizer.eos_token_id = 0
-        tokenizer.pad_token_id = 1
-        tokenizer.eos_token = tokenizer.decode(tokenizer.eos_token_id)
-        tokenizer.pad_token = tokenizer.decode(tokenizer.pad_token_id)
+    if model.config.model_type == 'llama':
+        # https://www.docswell.com/s/KanHatakeyama/ZYW6ME-2023-12-09-121017#p31
+        target_modules = [
+            "lm_head",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+        ]
+    elif model.config.model_type == 'phi-msft':
+        target_modules = ['lm_head.linear', 'transformer.embd.wte']
+    elif model.config.model_type == 'gpt2':
+        # llm-jp
+        target_modules = [
+            "c_attn",
+            "c_proj",
+            "c_fc",
+        ]
+    else:
+        target_modules = find_all_linear_names(model)
+
+    fan_in_fan_out = False
+    if model.config.model_type == 'gpt2':
+        fan_in_fan_out = True
+
+    if script_args.with_unsloth:
+        # accepted_modules = frozenset
+        target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
+                      "gate_proj", "up_proj", "down_proj",]
+        model = FastLanguageModel.get_peft_model(
+            model,
+            r=args.lora_r,
+            target_modules=target_modules,
+            lora_alpha=args.lora_alpha,
+            lora_dropout=0,  # Supports any, but = 0 is optimized
+            bias="none",  # Supports any, but = "none" is optimized
+            use_gradient_checkpointing=True,
+            random_state=3407,
+            max_seq_length=args.max_seq_length,
+        )
+        peft_config = None
+
+    else:
+        peft_config = LoraConfig(
+            lora_alpha=args.lora_alpha,
+            lora_dropout=args.lora_dropout,
+            r=args.lora_r,
+            bias="none",
+            task_type="CAUSAL_LM",
+            target_modules=target_modules,
+            fan_in_fan_out=fan_in_fan_out
+        )
 
     if getattr(tokenizer, "pad_token", None) is None:
         tokenizer.pad_token = tokenizer.unk_token
@@ -283,6 +353,7 @@ def create_and_prepare_model(args):
     if tokenizer.pad_token_id == tokenizer.eos_token_id:
         tokenizer.pad_token = tokenizer.unk_token
 
+    print('target_modules:', target_modules)
     print("=" * 80)
     print(tokenizer.eos_token_id, tokenizer.eos_token)
     print(tokenizer.bos_token_id, tokenizer.bos_token)
@@ -290,60 +361,9 @@ def create_and_prepare_model(args):
     print(tokenizer.unk_token_id, tokenizer.unk_token)
     print("=" * 80)
 
-    model = AutoModelForCausalLM.from_pretrained(
-        args.base_model,
-        quantization_config=bnb_config,
-        config=config,
-        device_map=device_map,
-        use_auth_token=True,
-        attn_implementation=attn_impl,
-        trust_remote_code=True,
-    )
-
-
     if script_args.base_model.startswith("meta-llama/Llama-2"):
         # check: https://github.com/huggingface/transformers/pull/24906
         model.config.pretraining_tp = 1
-
-    fan_in_fan_out = False
-    if script_args.target_all_layer:
-        target_modules = find_all_linear_names(model)
-    else:
-        if model.config.model_type == 'llama':
-            # https://www.docswell.com/s/KanHatakeyama/ZYW6ME-2023-12-09-121017#p31
-            target_modules = [
-                "lm_head",
-                "v_proj",
-                "o_proj",
-                "gate_proj",
-                "up_proj",
-            ]
-        elif model.config.model_type == 'phi-msft':
-            target_modules = ['lm_head.linear', 'transformer.embd.wte']
-        elif model.config.model_type == 'gpt2':
-            # llm-jp
-            target_modules = [
-                "c_attn",
-                "c_proj",
-                "c_fc",
-            ]
-        else:
-            target_modules = find_all_linear_names(model)
-
-    if model.config.model_type == 'gpt2':
-        fan_in_fan_out = True
-
-    print('target_modules:', target_modules)
-
-    peft_config = LoraConfig(
-        lora_alpha=script_args.lora_alpha,
-        lora_dropout=script_args.lora_dropout,
-        r=script_args.lora_r,
-        bias="none",
-        task_type="CAUSAL_LM",
-        target_modules=target_modules,
-        fan_in_fan_out=fan_in_fan_out
-    )
 
     model.config.eos_token_id = tokenizer.eos_token_id
     model.config.bos_token_id = tokenizer.bos_token_id
@@ -470,7 +490,7 @@ class OnlyInstructSFTTrainer(SFTTrainer):
             formatted = formatting_func(element)
             outputs = tokenizer(
                 formatted[0],
-                add_special_tokens=add_special_tokens,
+                add_special_tokens=False,
                 truncation=True,
                 padding=False,
                 max_length=max_seq_length,
@@ -479,30 +499,27 @@ class OnlyInstructSFTTrainer(SFTTrainer):
             if self.only_instruction:
                 instruct = tokenizer(
                     formatted[1],
-                    add_special_tokens=add_special_tokens,
+                    add_special_tokens=False,
                     truncation=True,
                     padding=False,
                     max_length=max_seq_length,
                     return_overflowing_tokens=False,
                 )
-            if not self.only_instruction:
-                labels = copy.deepcopy(outputs["input_ids_lens"])
-                return {"input_ids": outputs["input_ids"], "labels": labels}
-            else:
                 input_batch = []
-                sources_tokenized = []
-                input_ids_lens = [len(input_id)
-                    for input_id in instruct["input_ids"]
-                ]
+                sources_tokenized_lens = []
+                input_ids_lens = [len(input_id) for input_id in instruct["input_ids"]]
                 for input_length, input_ids in zip(input_ids_lens, outputs["input_ids"]):
                     if input_length > max_seq_length:
                         continue
                     input_batch.append(input_ids)
-                    sources_tokenized.append(input_length)
+                    sources_tokenized_lens.append(input_length)
                 labels = copy.deepcopy(input_batch)
-                for label, source_len in zip(labels, sources_tokenized):
+                for label, source_len in zip(labels, sources_tokenized_lens):
                     label[:source_len] = [-100] * source_len
                 return {"input_ids": input_batch, "labels": labels}
+            else:
+                labels = copy.deepcopy(outputs["input_ids"])
+                return {"input_ids": outputs["input_ids"], "labels": labels}
 
         tokenized_dataset = dataset.map(
             tokenize,
@@ -521,10 +538,9 @@ if eos_token == bos_token:
     bos_token = ''
 if not script_args.add_bos_token:
     bos_token = ''
-
-
 instruct_template.bos_token = bos_token
 instruct_template.eos_token = eos_token
+tokenizer.padding_side = script_args.padding_side
 
 if script_args.dataset_name.endswith('.json'):
     dataset = load_dataset(
@@ -584,7 +600,6 @@ trainer = OnlyInstructSFTTrainer(
 
 if script_args.long_lora:
     [p.requires_grad_() for n, p in trainer.model.named_parameters() if any([k in n for k in ["embed", "norm"]])]
-
 
 trainer.train()
 trainer.save_state()
