@@ -233,6 +233,9 @@ def create_and_prepare_model(args):
             attn_impl = "flash_attention_2"
 
         config = AutoConfig.from_pretrained(args.base_model, trust_remote_code=True)
+        if config.model_type == 'gpt2':
+            attn_impl = "eager"
+
         if args.long_lora and (config.model_type == "gpt-neox" or config.model_type == "llama"):
             print('with long_lora')
             orig_rope_scaling = getattr(config, "rope_scaling", None)
