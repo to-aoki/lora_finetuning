@@ -37,11 +37,12 @@ from transformers import (
     PreTrainedTokenizerBase,
     PreTrainedModel
 )
+from accelerate import Accelerator
 from transformers.trainer_utils import EvalPrediction
 from transformers.trainer_callback import TrainerCallback, TrainerState, TrainerControl
 
 import bitsandbytes as bnb
-from peft import LoraConfig
+from peft import LoraConfig, LoftQConfig
 from trl import SFTTrainer
 from template import templates_lookup
 
@@ -167,12 +168,13 @@ class ScriptArguments:
     dolly_ja_score: float = field(
         default=0.9,
     )
-    padding_side: str = field(
-        default="right",
-    )
     with_unsloth: bool = field(
         default=False,
     )
+    with_loftq: bool = field(
+        default=False,  # initialize slow
+    )
+
 
 parser = HfArgumentParser(ScriptArguments)
 script_args = parser.parse_args_into_dataclasses()[0]
@@ -180,6 +182,7 @@ script_args = parser.parse_args_into_dataclasses()[0]
 instruct_template = templates_lookup.get(script_args.prompt_format)
 
 
+accelerator = Accelerator()
 def find_all_linear_names(target_model):
     # https://note.com/npaka/n/na506c63b8cc9#260d93c9-2984-4a34-8118-8f68d64655b6
     cls = bnb.nn.Linear4bit  # (default:torch.nn.Linear,4bit:bnb.nn.Linear4bit,8bit:bnb.nn.Linear8bitLt)
@@ -204,24 +207,31 @@ def create_and_prepare_model(args):
             print("Your GPU supports bfloat16, you can accelerate training with the argument --bf16")
             print("=" * 80)
 
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=args.use_4bit,
-        bnb_4bit_quant_type=args.bnb_4bit_quant_type,
-        bnb_4bit_compute_dtype=compute_dtype,
-        bnb_4bit_use_double_quant=args.use_nested_quant,
-    )
+    loftq_config = None
+    init_lora_weights = True
+    if args.with_loftq:
+        init_lora_weights = 'loftq'
+        loftq_config = LoftQConfig(loftq_bits=4 if args.use_4bit else 8, loftq_iter=1)
+    elif not args.with_unsloth:
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=args.use_4bit,
+            bnb_4bit_quant_type=args.bnb_4bit_quant_type,
+            bnb_4bit_compute_dtype=compute_dtype,
+            bnb_4bit_use_double_quant=args.use_nested_quant,
+        )
 
     # Load the entire model on the GPU 0
     # switch to `device_map = "auto"` for multi-GPU
     device_map = "auto"
 
-    if script_args.with_unsloth:
+    if args.with_unsloth:
         from unsloth import FastLanguageModel
         model, tokenizer = FastLanguageModel.from_pretrained(
             model_name=args.base_model,
             max_seq_length=args.max_seq_length,
             dtype=None,
-            load_in_4bit=True,
+            load_in_4bit=False if args.with_loftq else args.use_4bit,
+            load_in_8bit=False if args.with_loftq or args.use_4bit else True,
         )
 
     else:
@@ -285,17 +295,27 @@ def create_and_prepare_model(args):
                 use_fast=True,
                 trust_remote_code=True,
             )
-
-        model = AutoModelForCausalLM.from_pretrained(
-            args.base_model,
-            quantization_config=bnb_config,
-            config=config,
-            device_map=device_map,
-            use_auth_token=True,
-            torch_dtype=torch.bfloat16 if script_args.bf16 else torch.float16,
-            attn_implementation=attn_impl,
-            trust_remote_code=True,
-        )
+        if args.with_loftq:
+            model = AutoModelForCausalLM.from_pretrained(
+                args.base_model,
+                config=config,
+                device_map=device_map,
+                use_auth_token=True,
+                torch_dtype=torch.bfloat16 if script_args.bf16 else torch.float16,
+                attn_implementation=attn_impl,
+                trust_remote_code=True,
+            )
+        else:
+            model = AutoModelForCausalLM.from_pretrained(
+                args.base_model,
+                quantization_config=bnb_config,
+                config=config,
+                device_map=device_map,
+                use_auth_token=True,
+                torch_dtype=torch.bfloat16 if script_args.bf16 else torch.float16,
+                attn_implementation=attn_impl,
+                trust_remote_code=True,
+            )
 
     if model.config.model_type == 'llama':
         # https://www.docswell.com/s/KanHatakeyama/ZYW6ME-2023-12-09-121017#p31
@@ -322,13 +342,15 @@ def create_and_prepare_model(args):
     if model.config.model_type == 'gpt2':
         fan_in_fan_out = True
 
-    if script_args.with_unsloth:
+    if args.with_unsloth:
         # accepted_modules = frozenset
         target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
                       "gate_proj", "up_proj", "down_proj",]
         model = FastLanguageModel.get_peft_model(
             model,
             r=args.lora_r,
+            init_lora_weights=init_lora_weights,
+            loftq_config=loftq_config,
             target_modules=target_modules,
             lora_alpha=args.lora_alpha,
             lora_dropout=0,  # Supports any, but = 0 is optimized
@@ -337,12 +359,14 @@ def create_and_prepare_model(args):
             random_state=3407,
             max_seq_length=args.max_seq_length,
         )
-        peft_config = None
+        lora_config = None
 
     else:
-        peft_config = LoraConfig(
+        lora_config = LoraConfig(
             lora_alpha=args.lora_alpha,
             lora_dropout=args.lora_dropout,
+            init_lora_weights=init_lora_weights,
+            loftq_config=loftq_config,
             r=args.lora_r,
             bias="none",
             task_type="CAUSAL_LM",
@@ -356,13 +380,20 @@ def create_and_prepare_model(args):
     if tokenizer.pad_token_id == tokenizer.eos_token_id:
         tokenizer.pad_token = tokenizer.unk_token
 
+    if any(k in config.model_type for k in ("gpt-2", "gpt-neox", "opt", "bloom")):
+        tokenizer.padding_side = "left"
+    else:
+        tokenizer.padding_side = "right"
+
     print('target_modules:', target_modules)
     print("=" * 80)
     print(tokenizer.eos_token_id, tokenizer.eos_token)
     print(tokenizer.bos_token_id, tokenizer.bos_token)
     print(tokenizer.pad_token_id, tokenizer.pad_token)
     print(tokenizer.unk_token_id, tokenizer.unk_token)
+    print(tokenizer.padding_side)
     print("=" * 80)
+
 
     if script_args.base_model.startswith("meta-llama/Llama-2"):
         # check: https://github.com/huggingface/transformers/pull/24906
@@ -371,10 +402,10 @@ def create_and_prepare_model(args):
     model.config.eos_token_id = tokenizer.eos_token_id
     model.config.bos_token_id = tokenizer.bos_token_id
 
-    return model, peft_config, tokenizer
+    return model, lora_config, tokenizer
 
 
-model, peft_config, tokenizer = create_and_prepare_model(script_args)
+model, lora_config, tokenizer = create_and_prepare_model(script_args)
 model.config.use_cache = False
 
 gradient_checkpointing = script_args.gradient_checkpointing
@@ -447,7 +478,6 @@ class OnlyInstructSFTTrainer(SFTTrainer):
         packing: Optional[bool] = False,
         formatting_func: Optional[Callable] = None,
         max_seq_length: Optional[int] = None,
-        infinite: Optional[bool] = False,
         num_of_sequences: Optional[int] = 1024,
         chars_per_token: Optional[float] = 3.6,
         dataset_num_proc: Optional[int] = None,
@@ -459,30 +489,29 @@ class OnlyInstructSFTTrainer(SFTTrainer):
     ):
         self.only_instruction = only_instruction
         super().__init__(
-            model,
-            args,
-            data_collator,
-            train_dataset,
-            eval_dataset,
-            tokenizer,
-            model_init,
-            compute_metrics,
-            callbacks,
-            optimizers,
-            preprocess_logits_for_metrics,
-            peft_config,
-            dataset_text_field,
-            packing,
-            formatting_func,
-            max_seq_length,
-            infinite,
-            num_of_sequences,
-            chars_per_token,
-            dataset_num_proc,
-            dataset_batch_size,
-            neftune_noise_alpha,
-            model_init_kwargs,
-            dataset_kwargs,
+            model=model,
+            args=args,
+            data_collator=data_collator,
+            train_dataset=train_dataset,
+            eval_dataset=eval_dataset,
+            tokenizer=tokenizer,
+            model_init=model_init,
+            compute_metrics=compute_metrics,
+            callbacks=callbacks,
+            optimizers=optimizers,
+            preprocess_logits_for_metrics=preprocess_logits_for_metrics,
+            peft_config=peft_config,
+            dataset_text_field=dataset_text_field,
+            packing=packing,
+            formatting_func=formatting_func,
+            max_seq_length=max_seq_length,
+            num_of_sequences=num_of_sequences,
+            chars_per_token=chars_per_token,
+            dataset_num_proc=dataset_num_proc,
+            dataset_batch_size=dataset_batch_size,
+            neftune_noise_alpha=neftune_noise_alpha,
+            model_init_kwargs=model_init_kwargs,
+            dataset_kwargs=dataset_kwargs,
         )
 
     def _prepare_non_packed_dataloader(
@@ -543,7 +572,6 @@ if not script_args.add_bos_token:
     bos_token = ''
 instruct_template.bos_token = bos_token
 instruct_template.eos_token = eos_token
-tokenizer.padding_side = script_args.padding_side
 
 if script_args.dataset_name.endswith('.json'):
     dataset = load_dataset(
@@ -590,7 +618,7 @@ trainer = OnlyInstructSFTTrainer(
     model=model,
     callbacks=callbacks,
     train_dataset=dataset,
-    peft_config=peft_config,
+    peft_config=lora_config,
     max_seq_length=script_args.max_seq_length,
     formatting_func=instruct_template.build_instruct,
     tokenizer=tokenizer,
