@@ -224,6 +224,7 @@ def create_and_prepare_model(args):
     # switch to `device_map = "auto"` for multi-GPU
     device_map = "auto"
 
+    config = AutoConfig.from_pretrained(args.base_model, trust_remote_code=True)
     if args.with_unsloth:
         from unsloth import FastLanguageModel
         model, tokenizer = FastLanguageModel.from_pretrained(
@@ -242,7 +243,6 @@ def create_and_prepare_model(args):
         if args.use_flash_attention_2:
             attn_impl = "flash_attention_2"
 
-        config = AutoConfig.from_pretrained(args.base_model, trust_remote_code=True)
         if config.model_type == 'gpt2':
             attn_impl = "eager"
 
