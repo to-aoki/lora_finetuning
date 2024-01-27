@@ -58,11 +58,12 @@ script_args = parser.parse_args_into_dataclasses()[0]
 instruct_template = templates_lookup.get(script_args.prompt_format)
 
 # require flash-attn or torch 2.1 later
-attn_impl = None
+attn_impl = "eager"
 if script_args.use_sdpa:
     attn_impl = "sdpa"
 if script_args.use_flash_attention_2:
     attn_impl = "flash_attention_2"
+
 
 if script_args.base_model:
     model = AutoModelForCausalLM.from_pretrained(
@@ -126,6 +127,7 @@ def generate(prompt):
     input_length = inputs.input_ids.shape[1]
     outputs = model.generate(
         **inputs,
+        prompt_lookup_num_tokens=10, 
         max_new_tokens=512,
         do_sample=script_args.do_sample,
         top_k=50,
@@ -149,4 +151,5 @@ print(text, generate(text))
 
 text = instruct_template.build_inference("紫式部と清少納言の作風をjsonで出力してください。")
 print(text, generate(text))
+
 
