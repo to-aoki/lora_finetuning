@@ -35,10 +35,6 @@ class ScriptArguments:
     safe_serialization: Optional[bool] = field(
         default=False,
     )
-    bf16: Optional[bool] = field(
-        default=True,
-        metadata={"help": "Enables bf16 training."},
-    )
     base_model: Optional[str] = field(
         default=None,
     )
