@@ -7,6 +7,10 @@ DEFAULT_NO_INPUT_TEMPLATE = "### Instruction:\n{}\n"
 DEFAULT_CONVERSATION_SYS = DEFAULT_NO_INPUT_TEMPLATE
 DEFAULT_CONVERSATION_TEMPLATE = DEFAULT_NO_INPUT_TEMPLATE
 DEFAULT_RESPONSE_SUFFIX = ""
+DEFAULT_DATA_INSTRUCTION_ATTR = "instruction"
+DEFAULT_DATA_OUTPUT_ATTR = "output"
+DEFAULT_DATA_INPUT_ATTR = "input"
+
 
 
 class InputTemplate:
@@ -20,6 +24,9 @@ class InputTemplate:
         conversation_template=DEFAULT_CONVERSATION_TEMPLATE,
         response_prefix=DEFALUT_RESPONSE_PREFIX,
         response_suffix=DEFAULT_RESPONSE_SUFFIX,
+        instruction_attr=DEFAULT_DATA_INSTRUCTION_ATTR,
+        output_attr=DEFAULT_DATA_OUTPUT_ATTR,
+        input_attr=DEFAULT_DATA_INPUT_ATTR,
     ):
         self.bos_token = bos_token
         self.eos_token = eos_token
@@ -29,24 +36,27 @@ class InputTemplate:
         self.conversation_template = conversation_template
         self.response_prefix = response_prefix
         self.response_suffix = response_suffix
+        self.instruction_attr = instruction_attr
+        self.output_attr = output_attr
+        self.input_attr = input_attr
 
     def build_instruct(self, example):
         full_instructions = []
         instructions = []
-        if 'input ' in example:
-            for i in range(len(example['instruction'])):
-                response = example['output'][i] + self.response_suffix + self.eos_token
-                if example['input'][i]:
-                    instruct_prompt = self.input_template.format(example['instruction'][i], example['input'][i])
+        if self.input_attr in example:
+            for i in range(len(example[self.instruction_attr])):
+                response = example[self.output_attr][i] + self.response_suffix + self.eos_token
+                if example[self.input_attr][i]:
+                    instruct_prompt = self.input_template.format(example[self.instruction_attr][i], example[self.input_attr][i])
                 else:
-                    instruct_prompt = self.no_input_template.format(example['instruction'][i])
+                    instruct_prompt = self.no_input_template.format(example[self.instruction_attr][i])
                 instruct = self.bos_token + instruct_prompt + self.response_prefix
                 full_instructions.append(instruct + response)
                 instructions.append(instruct)
         else:
-            for i in range(len(example['instruction'])):
-                response = example['output'][i] + self.response_suffix + self.eos_token
-                instruct_prompt = self.no_input_template.format(example['instruction'][i])
+            for i in range(len(example[self.instruction_attr])):
+                response = example[self.output_attr][i] + self.response_suffix + self.eos_token
+                instruct_prompt = self.no_input_template.format(example[self.instruction_attr][i])
                 instruct = self.bos_token + instruct_prompt + self.response_prefix
                 full_instructions.append(instruct + response)
                 instructions.append(instruct)
@@ -62,8 +72,8 @@ class InputTemplate:
             if define_sys is not None:
                 template = template.format(define_sys, "{}")
             for e in episodes:
-                response = e['output'] + self.response_suffix + self.eos_token
-                instruction_prompt = template.format(e['instruction'])
+                response = e[self.output_attr] + self.response_suffix + self.eos_token
+                instruction_prompt = template.format(e[self.instruction_attr])
                 instruct = self.bos + instruction_prompt + self.response_prefix
                 template = self.conversation_template
                 full_instructions.append(instruct + response)
