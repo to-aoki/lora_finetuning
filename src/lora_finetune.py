@@ -380,10 +380,7 @@ def create_and_prepare_model(args):
     if tokenizer.pad_token_id == tokenizer.eos_token_id:
         tokenizer.pad_token = tokenizer.unk_token
 
-    if any(k in config.model_type for k in ("gpt-2", "gpt-neox", "opt", "bloom")):
-        tokenizer.padding_side = "left"
-    else:
-        tokenizer.padding_side = "right"
+    tokenizer.padding_side = "right"
 
     print('target_modules:', target_modules)
     print("=" * 80)
