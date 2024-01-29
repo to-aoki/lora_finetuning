@@ -207,7 +207,7 @@ def create_and_prepare_model(args):
             print("Your GPU supports bfloat16, you can accelerate training with the argument --bf16")
             print("=" * 80)
 
-    loftq_config = None
+    loftq_config = {}
     init_lora_weights = True
     if args.with_loftq:
         init_lora_weights = 'loftq'
