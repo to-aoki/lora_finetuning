@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
 
+# origin: https://github.com/ggerganov/llama.cpp/blob/master/convert-llama-ggml-to-gguf.py
+# how to use:
+# copy to your-llama.cpp-path/
+# cd your-llama.cpp-path/
+# python3 convert-hf-to-gguf_for_llmjp.py llm-jp_safetensors_model_dir
+
 from __future__ import annotations
 
 import argparse
