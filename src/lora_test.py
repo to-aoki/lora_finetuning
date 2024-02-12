@@ -10,6 +10,7 @@ from transformers import (
 from peft import AutoPeftModelForCausalLM
 from template import templates_lookup
 
+
 @dataclass
 class ScriptArguments:
     max_seq_length: Optional[int] = field(default=300)
@@ -45,17 +46,20 @@ class ScriptArguments:
         default=True,
     )
     prompt_format: str = field(
-        default="elyza_instruct",
+        default="alpaca_short",
         metadata={"help": "lookup template.py"},
     )
     do_sample: Optional[bool] = field(
         default=True,
     )
 
+
 parser = HfArgumentParser(ScriptArguments)
 script_args = parser.parse_args_into_dataclasses()[0]
 
 instruct_template = templates_lookup.get(script_args.prompt_format)
+if instruct_template is None:
+    raise ValueError("not found prompt_format :", script_args.prompt_format)
 
 # require flash-attn or torch 2.1 later
 attn_impl = "eager"

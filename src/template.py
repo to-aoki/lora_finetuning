@@ -4,7 +4,7 @@ DEFALUT_EOS_TOKEN = "</s>"
 DEFALUT_RESPONSE_PREFIX = "### Response:\n"
 DEFAULT_INPUT_TEMPLATE = "### Instruction:\n{}\n### Input:\n{}\n"
 DEFAULT_NO_INPUT_TEMPLATE = "### Instruction:\n{}\n"
-DEFAULT_CONVERSATION_SYS = DEFAULT_NO_INPUT_TEMPLATE
+DEFAULT_CONVERSATION_SYS = "{}" + DEFAULT_NO_INPUT_TEMPLATE
 DEFAULT_CONVERSATION_TEMPLATE = DEFAULT_NO_INPUT_TEMPLATE
 DEFAULT_RESPONSE_SUFFIX = ""
 DEFAULT_DATA_INSTRUCTION_ATTR = "instruction"
@@ -63,7 +63,7 @@ class InputTemplate:
 
         return full_instructions, instructions
 
-    def build_mutil_turn(self, instruction_histories, define_sys=None):
+    def build_mutil_turn(self, instruction_histories, define_sys=""):
         conversations = []
         for episodes in instruction_histories:
             full_instructions = []

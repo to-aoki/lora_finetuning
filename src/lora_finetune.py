@@ -49,10 +49,12 @@ from template import templates_lookup
 # This example lora fine-tunes Llama v2 model on Jetson AGX Orin
 # Versions used:
 # accelerate == 0.25.0
-# peft == 0.7.1
+# peft == 0.8.2
 # bitsandbytes == 0.41.2
-# transformers == 4.37.0.dev0
-# trl == 0.7.7
+# transformers == 4.37.2
+# trl == 0.7.10
+# xformers == 0.0.25+d93b3fd.d20240211
+
 
 @dataclass
 class ScriptArguments:
@@ -140,7 +142,7 @@ class ScriptArguments:
         default=True,
     )
     prompt_format: str = field(
-        default="elyza_instruct",
+        default="alpaca_short",
         metadata={"help": "lookup template.py"},
     )
     use_flash_attention_2: bool = field(
@@ -173,6 +175,9 @@ class ScriptArguments:
     )
     with_loftq: bool = field(
         default=False,  # initialize slow
+    )
+    origin_tokenizer: bool = field(
+        default=True,
     )
 
 
@@ -512,7 +517,8 @@ class OnlyInstructSFTTrainer(SFTTrainer):
         )
 
     def _prepare_non_packed_dataloader(
-        self, tokenizer, dataset, dataset_text_field, max_seq_length, formatting_func=None, add_special_tokens=False
+        self, tokenizer, dataset, dataset_text_field, max_seq_length, formatting_func=None, add_special_tokens=False,
+            remove_unused_columns=True,
     ):
 
         def tokenize(element):
@@ -633,6 +639,7 @@ trainer.train()
 trainer.save_state()
 output_dir = os.path.join(script_args.output_dir, "final_checkpoints")
 trainer.model.save_pretrained(output_dir)
+tokenizer = AutoTokenizer.from_pretrained(script_args.base_model)
 tokenizer.save_pretrained(output_dir)
 
 if script_args.long_lora:

@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 import torch
-from peft import AutoPeftModelForCausalLM, PeftModel
+from peft import AutoPeftModelForCausalLM, PeftModel, PeftConfig
 from transformers import AutoTokenizer, HfArgumentParser, AutoModelForCausalLM, AutoConfig
 
 
@@ -55,6 +55,7 @@ if script_args.base_model is not None and script_args.base_config_path is not No
         config=config,
         device_map="auto",
     )
+    base_model_name_or_path = script_args.base_model
     trainable_params = os.path.join(script_args.merge_target_path, "trainable_params.bin")
     if os.path.isfile(trainable_params):
         base_model.load_state_dict(torch.load(trainable_params, map_location=base_model.device), strict=False)
@@ -64,14 +65,14 @@ if script_args.base_model is not None and script_args.base_config_path is not No
         device_map="auto",
     )
 else:
+    base_model_name_or_path = PeftConfig.from_pretrained(script_args.merge_target_path).base_model_name_or_path
     model = AutoPeftModelForCausalLM.from_pretrained(
         script_args.merge_target_path, device_map="auto",
     )
 
 model = model.merge_and_unload()
-
 model.save_pretrained(script_args.output_path, safe_serialization=script_args.safe_serialization)
 tokenizer = AutoTokenizer.from_pretrained(
-    script_args.merge_target_path,
+    base_model_name_or_path
 )
 tokenizer.save_pretrained(script_args.output_path)
