@@ -179,6 +179,9 @@ class ScriptArguments:
     origin_tokenizer: bool = field(
         default=True,
     )
+    use_hf_auth_token: bool = field(
+        default=False,
+    )
 
 
 parser = HfArgumentParser(ScriptArguments)
@@ -305,7 +308,7 @@ def create_and_prepare_model(args):
                 args.base_model,
                 config=config,
                 device_map=device_map,
-                use_auth_token=True,
+                use_auth_token=args.use_hf_auth_token,
                 torch_dtype=torch.bfloat16 if script_args.bf16 else torch.float16,
                 attn_implementation=attn_impl,
                 trust_remote_code=True,
@@ -316,7 +319,7 @@ def create_and_prepare_model(args):
                 quantization_config=bnb_config,
                 config=config,
                 device_map=device_map,
-                use_auth_token=True,
+                use_auth_token=args.use_hf_auth_token,
                 torch_dtype=torch.bfloat16 if script_args.bf16 else torch.float16,
                 attn_implementation=attn_impl,
                 trust_remote_code=True,
