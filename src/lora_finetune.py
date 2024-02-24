@@ -249,6 +249,7 @@ def create_and_prepare_model(args):
         if args.use_sdpa:
             attn_impl = "sdpa"
         if args.use_flash_attention_2:
+            # RuntimeError: FlashAttention backward for head dim > 192 requires A100/A800 or H100/H800
             attn_impl = "flash_attention_2"
 
         if config.model_type == 'gpt2':
@@ -353,7 +354,7 @@ def create_and_prepare_model(args):
     if args.with_unsloth:
         # accepted_modules = frozenset
         target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
-                      "gate_proj", "up_proj", "down_proj",]
+                      "gate_proj", "up_proj", "down_proj"]
         model = FastLanguageModel.get_peft_model(
             model,
             r=args.lora_r,
