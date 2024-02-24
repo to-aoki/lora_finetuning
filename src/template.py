@@ -153,5 +153,12 @@ templates_lookup = {
         conversation_template="Alice: {}\n",
         response_prefix="Bob: ",
         response_suffix="\n",
+    ),
+    "gemma": InputTemplate(
+        input_template="<start_of_turn>user\n{}\n{}<end_of_turn>\n",
+        no_input_template="<start_of_turn>user\n{}<end_of_turn>\n",
+        conversation_sys="<start_of_turn>user\n{}<end_of_turn>\n",
+        conversation_template="<start_of_turn>user\n{}<end_of_turn>\n",
+        response_prefix="<start_of_turn>model\n",
     )
 }
