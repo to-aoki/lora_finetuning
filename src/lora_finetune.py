@@ -25,7 +25,7 @@ from typing import Callable, Dict, List, Optional, Tuple, Union, Sequence
 
 import torch
 import torch.nn as nn
-from datasets import load_dataset, Dataset
+from datasets import load_dataset, Dataset, concatenate_datasets
 from transformers import (
     AutoConfig,
     AutoModelForCausalLM,
@@ -77,13 +77,17 @@ class ScriptArguments:
             "help": "The model that you want to train from the Hugging Face hub. E.g. gpt2, gpt2-xl, bert, etc."
         }
     )
-    dataset_name: Optional[str] = field(
-        default='sakusakumura/databricks-dolly-15k-ja-scored',
+    dataset_name: Optional[List[str]] = field(
+        default_factory=lambda: ['sakusakumura/databricks-dolly-15k-ja-scored'],
         metadata={"help": "The preference dataset to use."},
     )
     use_4bit: Optional[bool] = field(
         default=True,
         metadata={"help": "Activate 4bit precision base model loading"},
+    )
+    use_8bit: Optional[bool] = field(
+        default=False,
+        metadata={"help": "Activate 8bit precision base model loading"},
     )
     use_nested_quant: Optional[bool] = field(
         default=True,
@@ -183,7 +187,6 @@ class ScriptArguments:
         default=False,
     )
 
-
 parser = HfArgumentParser(ScriptArguments)
 script_args = parser.parse_args_into_dataclasses()[0]
 
@@ -249,6 +252,7 @@ def create_and_prepare_model(args):
         if args.use_sdpa:
             attn_impl = "sdpa"
         if args.use_flash_attention_2:
+            # gemma model:
             # RuntimeError: FlashAttention backward for head dim > 192 requires A100/A800 or H100/H800
             attn_impl = "flash_attention_2"
 
@@ -371,6 +375,8 @@ def create_and_prepare_model(args):
         lora_config = None
 
     else:
+        print(target_modules)
+
         lora_config = LoraConfig(
             lora_alpha=args.lora_alpha,
             lora_dropout=args.lora_dropout,
@@ -580,18 +586,34 @@ if not script_args.add_bos_token:
 instruct_template.bos_token = bos_token
 instruct_template.eos_token = eos_token
 
-if script_args.dataset_name.endswith('.json'):
-    dataset = load_dataset(
-        'json',
-        data_files=script_args.dataset_name,
-        split="train",
-    )
-else:
-    dataset = load_dataset(script_args.dataset_name, split="train")
-if script_args.dataset_name == 'sakusakumura/databricks-dolly-15k-ja-scored':
-    dataset = dataset.filter(lambda example: example["bertscore"]["f1"] > script_args.dolly_ja_score)
-dataset = dataset.shuffle(seed=42)
+instruct_columns = ["instruction", "input", "instruction"]
 
+dataset = None
+for dataset_name in script_args.dataset_name:
+    if dataset_name.endswith('.json'):
+        dataset_one = load_dataset(
+            'json',
+            data_files=script_args.dataset_name,
+            split="train",
+        )
+    else:
+        dataset_one = load_dataset(dataset_name, split="train")
+    if dataset_name == 'sakusakumura/databricks-dolly-15k-ja-scored':
+        dataset_one = dataset_one.filter(lambda example: example["bertscore"]["f1"] > script_args.dolly_ja_score)
+
+    dataset_one = dataset_one.shuffle(seed=42)
+    if "input" not in dataset_one.column_names:
+        dataset_one = dataset_one.map(lambda example: {"input": "", **example})
+
+    dataset_one = dataset_one.map(lambda example: {col: example[col] for col in instruct_columns})
+
+    if dataset is None:
+        dataset = dataset_one
+    else:
+        common_columns = set(dataset.column_names) & set(dataset_one.column_names)
+        dataset = dataset.map(lambda example: {col: example[col] for col in common_columns})
+        dataset_one = dataset_one.map(lambda example: {col: example[col] for col in common_columns})
+        dataset = concatenate_datasets([dataset, dataset_one])
 
 neftune_noise_alpha = script_args.neftune_noise_alpha
 if neftune_noise_alpha <= 0:
