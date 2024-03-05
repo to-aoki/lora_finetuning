@@ -32,7 +32,7 @@ class ScriptArguments:
     output_path: Optional[str] = field(
         default="final_merged_checkpoint",
     )
-    safe_serialization: Optional[bool] = field(
+    without_safe_serialization: Optional[bool] = field(
         default=False,
     )
     base_model: Optional[str] = field(
@@ -70,8 +70,12 @@ else:
         script_args.merge_target_path, device_map="auto",
     )
 
+if model.config.model_type == 'gemma':
+    # https://github.com/huggingface/transformers/pull/29402
+    model.config.hidden_act = 'gelu_pytorch_tanh'
+
 model = model.merge_and_unload()
-model.save_pretrained(script_args.output_path, safe_serialization=script_args.safe_serialization)
+model.save_pretrained(script_args.output_path, safe_serialization=not script_args.without_safe_serialization)
 tokenizer = AutoTokenizer.from_pretrained(
     base_model_name_or_path
 )

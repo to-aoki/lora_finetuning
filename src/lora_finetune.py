@@ -25,7 +25,7 @@ from typing import Callable, Dict, List, Optional, Tuple, Union, Sequence
 
 import torch
 import torch.nn as nn
-from datasets import load_dataset, Dataset, concatenate_datasets
+from datasets import load_dataset, Dataset, concatenate_datasets, load_from_disk
 from transformers import (
     AutoConfig,
     AutoModelForCausalLM,
@@ -236,6 +236,10 @@ def create_and_prepare_model(args):
     device_map = "auto"
 
     config = AutoConfig.from_pretrained(args.base_model, trust_remote_code=True)
+    if config.model_type == 'gemma':
+        # https://github.com/huggingface/transformers/pull/29402
+        config.hidden_act = 'gelu_pytorch_tanh'
+
     if args.with_unsloth:
         from unsloth import FastLanguageModel
         model, tokenizer = FastLanguageModel.from_pretrained(
@@ -329,6 +333,7 @@ def create_and_prepare_model(args):
                 attn_implementation=attn_impl,
                 trust_remote_code=True,
             )
+        print(model)
 
     if model.config.model_type == 'llama':
         # https://www.docswell.com/s/KanHatakeyama/ZYW6ME-2023-12-09-121017#p31
@@ -347,6 +352,14 @@ def create_and_prepare_model(args):
             "c_attn",
             "c_proj",
             "c_fc",
+        ]
+    elif model.config.model_type == 'gemma':
+        target_modules = [
+            "lm_head",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
         ]
     else:
         target_modules = find_all_linear_names(model)
@@ -586,7 +599,7 @@ if not script_args.add_bos_token:
 instruct_template.bos_token = bos_token
 instruct_template.eos_token = eos_token
 
-instruct_columns = ["instruction", "input", "instruction"]
+instruct_columns = ["instruction", "input", "output"]
 
 dataset = None
 for dataset_name in script_args.dataset_name:
@@ -597,7 +610,10 @@ for dataset_name in script_args.dataset_name:
             split="train",
         )
     else:
-        dataset_one = load_dataset(dataset_name, split="train")
+        if os.path.exists(dataset_name):
+            dataset_one = load_from_disk(dataset_name)
+        else:
+            dataset_one = load_dataset(dataset_name, split="train")
     if dataset_name == 'sakusakumura/databricks-dolly-15k-ja-scored':
         dataset_one = dataset_one.filter(lambda example: example["bertscore"]["f1"] > script_args.dolly_ja_score)
 
@@ -614,6 +630,7 @@ for dataset_name in script_args.dataset_name:
         dataset = dataset.map(lambda example: {col: example[col] for col in common_columns})
         dataset_one = dataset_one.map(lambda example: {col: example[col] for col in common_columns})
         dataset = concatenate_datasets([dataset, dataset_one])
+
 
 neftune_noise_alpha = script_args.neftune_noise_alpha
 if neftune_noise_alpha <= 0:
