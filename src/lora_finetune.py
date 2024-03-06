@@ -256,8 +256,8 @@ def create_and_prepare_model(args):
         if args.use_sdpa:
             attn_impl = "sdpa"
         if args.use_flash_attention_2:
-            # gemma model:
             # RuntimeError: FlashAttention backward for head dim > 192 requires A100/A800 or H100/H800
+            # FlashAttention v2.5.5 support
             attn_impl = "flash_attention_2"
 
         if config.model_type == 'gpt2':
@@ -355,11 +355,13 @@ def create_and_prepare_model(args):
         ]
     elif model.config.model_type == 'gemma':
         target_modules = [
-            "lm_head",
-            "v_proj",
-            "o_proj",
-            "gate_proj",
+            "k_proj",
             "up_proj",
+            "v_proj",
+            "gate_proj",
+            "o_proj",
+            "q_proj",
+            "down_proj"
         ]
     else:
         target_modules = find_all_linear_names(model)
@@ -370,8 +372,9 @@ def create_and_prepare_model(args):
 
     if args.with_unsloth:
         # accepted_modules = frozenset
-        target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
-                      "gate_proj", "up_proj", "down_proj"]
+        if model.config.model_type == 'llama':
+            target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
+                          "gate_proj", "up_proj", "down_proj"]
         model = FastLanguageModel.get_peft_model(
             model,
             r=args.lora_r,
