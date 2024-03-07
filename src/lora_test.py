@@ -5,7 +5,8 @@ from typing import Optional
 from transformers import (
     HfArgumentParser,
     AutoTokenizer,
-    AutoModelForCausalLM
+    AutoModelForCausalLM,
+    AutoConfig
 )
 from peft import AutoPeftModelForCausalLM
 from template import templates_lookup
@@ -52,6 +53,13 @@ class ScriptArguments:
     do_sample: Optional[bool] = field(
         default=True,
     )
+    tokenizer_model: str = field(
+        default=None,
+        metadata={"help": "apply tokenizer model directory or path"},
+    )
+    use_unsloth:str = field(
+        default=False
+    )
 
 
 parser = HfArgumentParser(ScriptArguments)
@@ -68,18 +76,29 @@ if script_args.use_sdpa:
 if script_args.use_flash_attention_2:
     attn_impl = "flash_attention_2"
 
-
+tokenizer = None
 if script_args.base_model:
-    model = AutoModelForCausalLM.from_pretrained(
-        script_args.base_model,
-        load_in_4bit=script_args.load_in_4bit,
-        load_in_8bit=script_args.load_in_8bit,
-        device_map="auto",
-        torch_dtype=torch.bfloat16 if script_args.bf16 else torch.float16,
-        attn_implementation=attn_impl,
-        trust_remote_code=True)
-    if not script_args.load_in_4bit and not script_args.load_in_8bit:
-        model.cuda()
+    if script_args.use_unsloth:
+        from unsloth import FastLanguageModel
+        model, tokenizer = FastLanguageModel.from_pretrained(
+            model_name=script_args.base_model,
+            dtype=None,
+            load_in_4bit=script_args.load_in_4bit,
+            load_in_8bit=script_args.load_in_8bit,
+            # token = "hf_...", # use one if using gated models like meta-llama/Llama-2-7b-hf
+        )
+        FastLanguageModel.for_inference(model)
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            script_args.base_model,
+            load_in_4bit=script_args.load_in_4bit,
+            load_in_8bit=script_args.load_in_8bit,
+            device_map="auto",
+            torch_dtype=torch.bfloat16 if script_args.bf16 else torch.float16,
+            attn_implementation=attn_impl,
+            trust_remote_code=True)
+        if not script_args.load_in_4bit and not script_args.load_in_8bit:
+            model.cuda()
 
     script_args.lora_model = script_args.base_model
 else:
@@ -94,20 +113,29 @@ else:
         trust_remote_code=True)
     model.cuda()
 
-if script_args.use_nai_tokenizer:
-    # stablelm alpha tokenizer setting
-    from transformers import LlamaTokenizer
-    tokenizer = LlamaTokenizer.from_pretrained(
-        script_args.lora_model, trust_remote_code=True,
-        additional_special_tokens=['▁▁'],
-        use_fast=False,
-    )
-else:
-    print("fast tokenizer:", not script_args.slow_tokenizer)
-    tokenizer = AutoTokenizer.from_pretrained(
-        script_args.lora_model, trust_remote_code=True,
-        use_fast=not script_args.slow_tokenizer,
-    )
+if model.config.model_type == 'gemma':
+    from transformers import activations
+    model.act_fn = activations.ACT2FN["gelu_pytorch_tanh"]
+
+tokenizer_path = script_args.lora_model
+if script_args.tokenizer_model is not None:
+    tokenizer_path = script_args.tokenizer_model
+
+if tokenizer is None:
+    if script_args.use_nai_tokenizer:
+        # stablelm alpha tokenizer setting
+        from transformers import LlamaTokenizer
+        tokenizer = LlamaTokenizer.from_pretrained(
+            tokenizer_path, trust_remote_code=True,
+            additional_special_tokens=['▁▁'],
+            use_fast=False,
+        )
+    else:
+        print("fast tokenizer:", not script_args.slow_tokenizer)
+        tokenizer = AutoTokenizer.from_pretrained(
+            tokenizer_path, trust_remote_code=True,
+            use_fast=not script_args.slow_tokenizer,
+        )
 
 if getattr(tokenizer, "pad_token", None) is None:
     tokenizer.pad_token = tokenizer.unk_token
@@ -134,12 +162,13 @@ def generate(prompt):
         prompt_lookup_num_tokens=10, 
         max_new_tokens=512,
         do_sample=script_args.do_sample,
-        top_k=50,
-        num_return_sequences=1,
+        top_p=0.95,
+        temperature=0.2,
+        repetition_penalty=1.1,
         eos_token_id=tokenizer.eos_token_id)
 
     output_str = tokenizer.decode(
-        outputs[0][input_length:], skip_special_tokens=True)
+        outputs[0][input_length:], skip_special_tokens=False)
 
     return output_str
 

@@ -46,8 +46,9 @@ class InputTemplate:
         if self.input_attr in example:
             for i in range(len(example[self.instruction_attr])):
                 response = example[self.output_attr][i] + self.response_suffix + self.eos_token
-                if example[self.input_attr][i]:
-                    instruct_prompt = self.input_template.format(example[self.instruction_attr][i], example[self.input_attr][i])
+                if example[self.input_attr][i] and example[self.input_attr][i] != '':
+                    instruct_prompt = self.input_template.format(
+                        example[self.instruction_attr][i], example[self.input_attr][i])
                 else:
                     instruct_prompt = self.no_input_template.format(example[self.instruction_attr][i])
                 instruct = self.bos_token + instruct_prompt + self.response_prefix
@@ -160,6 +161,6 @@ templates_lookup = {
         conversation_sys="<start_of_turn>user\n{}<end_of_turn>\n",
         conversation_template="<start_of_turn>user\n{}<end_of_turn>\n",
         response_prefix="<start_of_turn>model\n",
-        response_suffix="<end_of_turn>\n",
+        response_suffix="<end_of_turn>\n",  # <end_of_turn>model ?
     )
 }

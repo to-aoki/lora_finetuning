@@ -41,42 +41,71 @@ class ScriptArguments:
     base_config_path: Optional[str] = field(
         default=None,
     )
+    use_unsloth: Optional[bool] = field(
+        default=False,
+    )
+    unsloth_max_seq_length: Optional[int] = field(
+        default=8192  # RoPE max Scaling length
+    )
+    unsloth_save_method: Optional[str] = field(
+        default="merged_16bit",  # or merged_4bit
+    )
+    use_unsloth_4bit: Optional[bool] = field(
+        default=False,
+    )
 
 
 parser = HfArgumentParser(ScriptArguments)
 script_args = parser.parse_args_into_dataclasses()[0]
-
-if script_args.base_model is not None and script_args.base_config_path is not None:
-    config = None
-    if script_args.base_config_path is not None:
-        config = AutoConfig.from_pretrained(script_args.base_config_path)
-    base_model = AutoModelForCausalLM.from_pretrained(
-        script_args.base_model,
-        config=config,
-        device_map="auto",
-    )
-    base_model_name_or_path = script_args.base_model
-    trainable_params = os.path.join(script_args.merge_target_path, "trainable_params.bin")
-    if os.path.isfile(trainable_params):
-        base_model.load_state_dict(torch.load(trainable_params, map_location=base_model.device), strict=False)
-    model = PeftModel.from_pretrained(
-        base_model,
-        script_args.merge_target_path,
-        device_map="auto",
+tokenizer = None
+if script_args.use_unsloth:
+    from unsloth import FastLanguageModel
+    model, tokenizer = FastLanguageModel.from_pretrained(
+        model_name=script_args.merge_target_path,
+        max_seq_length=script_args.unsloth_max_seq_length,
+        dtype=None,
+        load_in_4bit=script_args.use_unsloth_4bit,
     )
 else:
-    base_model_name_or_path = PeftConfig.from_pretrained(script_args.merge_target_path).base_model_name_or_path
-    model = AutoPeftModelForCausalLM.from_pretrained(
-        script_args.merge_target_path, device_map="auto",
-    )
+    if script_args.base_model is not None and script_args.base_config_path is not None:
+        config = None
+        if script_args.base_config_path is not None:
+            config = AutoConfig.from_pretrained(script_args.base_config_path)
+        base_model = AutoModelForCausalLM.from_pretrained(
+            script_args.base_model,
+            config=config,
+            device_map="auto",
+        )
+        base_model_name_or_path = script_args.base_model
+        trainable_params = os.path.join(script_args.merge_target_path, "trainable_params.bin")
+        if os.path.isfile(trainable_params):
+            base_model.load_state_dict(torch.load(trainable_params, map_location=base_model.device), strict=False)
+        model = PeftModel.from_pretrained(
+            base_model,
+            script_args.merge_target_path,
+            device_map="auto",
+        )
+    else:
+        base_model_name_or_path = PeftConfig.from_pretrained(
+            script_args.merge_target_path).base_model_name_or_path
+        model = AutoPeftModelForCausalLM.from_pretrained(
+            script_args.merge_target_path, device_map="auto",
+        )
 
 if model.config.model_type == 'gemma':
     # https://github.com/huggingface/transformers/pull/29402
     model.config.hidden_act = 'gelu_pytorch_tanh'
 
-model = model.merge_and_unload()
-model.save_pretrained(script_args.output_path, safe_serialization=not script_args.without_safe_serialization)
-tokenizer = AutoTokenizer.from_pretrained(
-    base_model_name_or_path
-)
-tokenizer.save_pretrained(script_args.output_path)
+if script_args.use_unsloth:
+    model.save_pretrained_merged(
+        script_args.output_path, tokenizer, save_method=script_args.unsloth_save_method)
+
+else:
+    model = model.merge_and_unload()
+    model.save_pretrained(script_args.output_path,
+                          safe_serialization=not script_args.without_safe_serialization)
+    if tokenizer is None:
+        tokenizer = AutoTokenizer.from_pretrained(
+            base_model_name_or_path
+        )
+    tokenizer.save_pretrained(script_args.output_path)

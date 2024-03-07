@@ -391,8 +391,6 @@ def create_and_prepare_model(args):
         lora_config = None
 
     else:
-        print(target_modules)
-
         lora_config = LoraConfig(
             lora_alpha=args.lora_alpha,
             lora_dropout=args.lora_dropout,
@@ -421,7 +419,6 @@ def create_and_prepare_model(args):
     print(tokenizer.unk_token_id, tokenizer.unk_token)
     print(tokenizer.padding_side)
     print("=" * 80)
-
 
     if script_args.base_model.startswith("meta-llama/Llama-2"):
         # check: https://github.com/huggingface/transformers/pull/24906
@@ -476,7 +473,6 @@ class DataCollatorForCompletion:
         )
         labels = [torch.tensor(x) for x in labels]
         labels = torch.nn.utils.rnn.pad_sequence(labels, batch_first=True, padding_value=-100)
-
         return dict(
             input_ids=input_ids,
             labels=labels,
