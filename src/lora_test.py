@@ -97,6 +97,7 @@ if script_args.base_model:
             torch_dtype=torch.bfloat16 if script_args.bf16 else torch.float16,
             attn_implementation=attn_impl,
             trust_remote_code=True)
+
         if not script_args.load_in_4bit and not script_args.load_in_8bit:
             model.cuda()
 
@@ -111,11 +112,8 @@ else:
         device_map="auto",
         torch_dtype=torch.bfloat16 if script_args.bf16 else torch.float16,
         trust_remote_code=True)
-    model.cuda()
 
-if model.config.model_type == 'gemma':
-    from transformers import activations
-    model.act_fn = activations.ACT2FN["gelu_pytorch_tanh"]
+    model.cuda()
 
 tokenizer_path = script_args.lora_model
 if script_args.tokenizer_model is not None:

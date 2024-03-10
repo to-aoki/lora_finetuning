@@ -194,6 +194,7 @@ instruct_template = templates_lookup.get(script_args.prompt_format)
 
 
 accelerator = Accelerator()
+
 def find_all_linear_names(target_model):
     # https://note.com/npaka/n/na506c63b8cc9#260d93c9-2984-4a34-8118-8f68d64655b6
     cls = bnb.nn.Linear4bit  # (default:torch.nn.Linear,4bit:bnb.nn.Linear4bit,8bit:bnb.nn.Linear8bitLt)
@@ -202,7 +203,6 @@ def find_all_linear_names(target_model):
         if isinstance(module, cls):
             names = name.split('.')
             lora_module_names.add(names[0] if len(names) == 1 else names[-1])
-
     if 'lm_head' in lora_module_names:  # needed for 16-bit
         lora_module_names.remove('lm_head')
     return list(lora_module_names)
@@ -236,9 +236,6 @@ def create_and_prepare_model(args):
     device_map = "auto"
 
     config = AutoConfig.from_pretrained(args.base_model, trust_remote_code=True)
-    if config.model_type == 'gemma':
-        # https://github.com/huggingface/transformers/pull/29402
-        config.hidden_act = 'gelu_pytorch_tanh'
 
     if args.with_unsloth:
         from unsloth import FastLanguageModel
@@ -249,7 +246,6 @@ def create_and_prepare_model(args):
             load_in_4bit=False if args.with_loftq else args.use_4bit,
             load_in_8bit=False if args.with_loftq or args.use_4bit else True,
         )
-
     else:
         # require flash-attn or torch 2.1 later
         attn_impl = None
@@ -333,6 +329,7 @@ def create_and_prepare_model(args):
                 attn_implementation=attn_impl,
                 trust_remote_code=True,
             )
+
         print(model)
 
     if model.config.model_type == 'llama':

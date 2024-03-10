@@ -92,10 +92,6 @@ else:
             script_args.merge_target_path, device_map="auto",
         )
 
-if model.config.model_type == 'gemma':
-    # https://github.com/huggingface/transformers/pull/29402
-    model.config.hidden_act = 'gelu_pytorch_tanh'
-
 if script_args.use_unsloth:
     model.save_pretrained_merged(
         script_args.output_path, tokenizer, save_method=script_args.unsloth_save_method)
