@@ -161,6 +161,6 @@ templates_lookup = {
         conversation_sys="<start_of_turn>user\n{}<end_of_turn>\n",
         conversation_template="<start_of_turn>user\n{}<end_of_turn>\n",
         response_prefix="<start_of_turn>model\n",
-        response_suffix="<end_of_turn>\n",  # <end_of_turn>model ?
+        # response_suffix="<end_of_turn>\n",  # <end_of_turn>model ? not learning
     )
 }
