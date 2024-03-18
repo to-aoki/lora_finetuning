@@ -1,16 +1,30 @@
 
+import copy
+from transformers import AutoTokenizer
+
 DEFALUT_BOS_TOKEN = "<s>"
 DEFALUT_EOS_TOKEN = "</s>"
 DEFALUT_RESPONSE_PREFIX = "### Response:\n"
 DEFAULT_INPUT_TEMPLATE = "### Instruction:\n{}\n### Input:\n{}\n"
 DEFAULT_NO_INPUT_TEMPLATE = "### Instruction:\n{}\n"
-DEFAULT_CONVERSATION_SYS = "{}" + DEFAULT_NO_INPUT_TEMPLATE
+DEFAULT_CONVERSATION_SYS = DEFAULT_NO_INPUT_TEMPLATE
 DEFAULT_CONVERSATION_TEMPLATE = DEFAULT_NO_INPUT_TEMPLATE
 DEFAULT_RESPONSE_SUFFIX = ""
 DEFAULT_DATA_INSTRUCTION_ATTR = "instruction"
 DEFAULT_DATA_OUTPUT_ATTR = "output"
 DEFAULT_DATA_INPUT_ATTR = "input"
 
+
+def count_placeholders(format_string):
+    placeholders = 0
+    in_brace = False
+    for char in format_string:
+        if char == "{":
+            in_brace = True
+        elif char == "}" and in_brace:
+            placeholders += 1
+            in_brace = False
+    return placeholders
 
 
 class InputTemplate:
@@ -33,6 +47,9 @@ class InputTemplate:
         self.input_template = input_template
         self.no_input_template = no_input_template
         self.conversation_sys = conversation_sys
+        self.system_require = False
+        if count_placeholders(self.conversation_sys) > 1:
+            self.system_require = True
         self.conversation_template = conversation_template
         self.response_prefix = response_prefix
         self.response_suffix = response_suffix
@@ -52,34 +69,41 @@ class InputTemplate:
                 else:
                     instruct_prompt = self.no_input_template.format(example[self.instruction_attr][i])
                 instruct = self.bos_token + instruct_prompt + self.response_prefix
-                full_instructions.append(instruct + response)
-                instructions.append(instruct)
+                full_instructions.append([instruct + response])
+                instructions.append([instruct])
         else:
             for i in range(len(example[self.instruction_attr])):
                 response = example[self.output_attr][i] + self.response_suffix + self.eos_token
                 instruct_prompt = self.no_input_template.format(example[self.instruction_attr][i])
                 instruct = self.bos_token + instruct_prompt + self.response_prefix
-                full_instructions.append(instruct + response)
-                instructions.append(instruct)
+                full_instructions.append([instruct + response])
+                instructions.append([instruct])
 
-        return full_instructions, instructions
+        return zip(full_instructions, instructions)
 
-    def build_mutil_turn(self, instruction_histories, define_sys=""):
+    def build_mutil_turn(self, example, define_sys=None):
         conversations = []
+        instruction_histories = example['conversations']
         for episodes in instruction_histories:
             full_instructions = []
             instructions = []
+            # 1st session add sys
             template = self.conversation_sys
-            if define_sys is not None:
+            if self.system_require and define_sys is not None:
                 template = template.format(define_sys, "{}")
+            found_human = False
             for e in episodes:
-                response = e[self.output_attr] + self.response_suffix + self.eos_token
-                instruction_prompt = template.format(e[self.instruction_attr])
-                instruct = self.bos + instruction_prompt + self.response_prefix
-                template = self.conversation_template
-                full_instructions.append(instruct + response)
-                instructions.append(instruct)
-            conversations.append(full_instructions, instructions)
+                if e['from'] == 'human':
+                    found_human = True
+                    instruction_prompt = template.format(e['value'])
+                    instruct = self.bos_token + instruction_prompt + self.response_prefix
+                elif e['from'] == 'gpt' and found_human:
+                    found_human = False
+                    response = e['value'] + self.response_suffix + self.eos_token
+                    template = self.conversation_template
+                    full_instructions.append(instruct + response)
+                    instructions.append(instruct)
+            conversations.append([full_instructions, instructions])
         return conversations
 
     def build_inference(self, instruction, input=None):
@@ -96,12 +120,12 @@ class InputTemplate:
 templates_lookup = {
     "alpaca_short": InputTemplate(),
     "alpaca_ja": InputTemplate(
-        input_template="以下は、ある作業を説明した指示と、作業を補助する文脈を持つ入力の組み合わせです。指示を適切に満たすような応答を書きなさい。\n\n"
+        input_template="以下は、ある作業を説明した指示と、作業を補助する文脈を持つ入力の組み合わせです。指示を適切に満たすような応答を書きなさい。\n"
                        "### 指示:\n{}\n"
                        "### 入力:\n{}\n",
-        no_input_template="以下は、ある作業を説明した指示です。指示を適切に満たすような応答を書きなさい。\n\n"
+        no_input_template="以下は、ある作業を説明した指示です。指示を適切に満たすような応答を書きなさい。\n"
                           "### 指示 :\n{}\n",
-        conversation_sys="以下は、ある対話です。対話が破綻しないように応答を書きなさい。\n\n"
+        conversation_sys="以下は、ある対話です。対話が破綻しないように応答を書きなさい。\n"
                           "### 指示 :\n{}\n",
         conversation_template="### 指示 :\n{}\n",
         response_prefix="### 応答:\n"
@@ -135,8 +159,16 @@ templates_lookup = {
         response_prefix="システム: ",
     ),
     "deepseek_coder": InputTemplate(
-        input_template="You are an AI programming assistant, utilizing the DeepSeek Coder model, developed by DeepSeek Company, and you only answer questions related to computer science. For politically sensitive questions, security and privacy issues, and other non-computer science questions, you will refuse to answer.\n### Instruction:\n{}\n### Input:\n{}\n",
-        no_input_template="You are an AI programming assistant, utilizing the DeepSeek Coder model, developed by DeepSeek Company, and you only answer questions related to computer science. For politically sensitive questions, security and privacy issues, and other non-computer science questions, you will refuse to answer.\n### Instruction:\n{}\n",
+        input_template="You are an AI programming assistant, utilizing the DeepSeek Coder model, "
+                       "developed by DeepSeek Company, and you only answer questions related to computer science. "
+                       "For politically sensitive questions, security and privacy issues, "
+                       "and other non-computer science questions, you will refuse to answer.\n"
+                       "### Instruction:\n{}\n### Input:\n{}\n",
+        no_input_template="You are an AI programming assistant, utilizing the DeepSeek Coder model, "
+                          "developed by DeepSeek Company, and you only answer questions related to computer science. "
+                          "For politically sensitive questions, security and privacy issues, "
+                          "and other non-computer science questions, you will refuse to answer.\n"
+                          "### Instruction:\n{}\n",
         response_suffix="\n",
     ),
     "phi2-instruct": InputTemplate(
@@ -164,3 +196,78 @@ templates_lookup = {
         # response_suffix="<end_of_turn>\n",  # <end_of_turn>model ? not learning
     )
 }
+
+
+class TemplateTokenizer:
+    def __init__(
+        self, tokenizer: AutoTokenizer,
+        template,
+        dataset,
+        max_seq_length=2048,
+        source_mask=True
+    ):
+        self.tokenizer = tokenizer
+        self.template = template
+        self.formatting_func = self.template.build_instruct
+        self.max_seq_length = max_seq_length
+        self.source_mask = source_mask
+        self.dataset = dataset
+        self.apply_build_function(dataset)
+
+    def apply_build_function(self, dataset):
+        if 'conversations' in self.dataset.column_names:
+            self.formatting_func = self.template.build_mutil_turn
+        else:
+            self.formatting_func = self.template.build_instruct
+        self.dataset = dataset
+
+    def tokenize_dataset(self, num_proc=None, batch_size=1000):
+        return self.dataset.map(
+            self._tokenize,
+            batched=True,
+            remove_columns=self.dataset.column_names,
+            num_proc=num_proc,
+            batch_size=batch_size
+        )
+
+    def _tokenize(self, element):
+        input_ids_list = []
+        labels_list = []
+        formatted_pair = self.formatting_func(element)
+        for pair in formatted_pair:
+            outputs = self.tokenizer(
+                pair[0],
+                add_special_tokens=False,
+                truncation=True,
+                padding=False,
+                max_length=self.max_seq_length,
+                return_overflowing_tokens=False,
+            )
+            if self.source_mask:
+                instruct = self.tokenizer(
+                    pair[1],
+                    add_special_tokens=False,
+                    truncation=True,
+                    padding=False,
+                    max_length=self.max_seq_length,
+                    return_overflowing_tokens=False,
+                )
+                input_batch = []
+                sources_tokenized_lens = []
+                input_ids_lens = [len(input_id) for input_id in instruct["input_ids"]]
+                for input_length, input_ids in zip(input_ids_lens, outputs["input_ids"]):
+                    if input_length > self.max_seq_length:
+                        continue
+                    input_batch.append(input_ids)
+                    sources_tokenized_lens.append(input_length)
+                labels = copy.deepcopy(input_batch)
+                for label, source_len in zip(labels, sources_tokenized_lens):
+                    label[:source_len] = [-100] * source_len
+                input_ids_list.extend(input_batch)
+                labels_list.extend(labels)
+            else:
+                input_ids_list.extend(outputs["input_ids"])
+                labels = copy.deepcopy(outputs["input_ids"])
+                labels_list.extend(labels)
+
+        return {"input_ids": input_ids_list, "labels": labels_list}

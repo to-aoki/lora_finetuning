@@ -19,13 +19,11 @@
 import os
 import re
 import math
-import copy
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional, Tuple, Union, Sequence
+from typing import Dict, List, Optional, Sequence
 
 import torch
-import torch.nn as nn
-from datasets import load_dataset, Dataset, concatenate_datasets, load_from_disk
+from datasets import load_dataset, concatenate_datasets, load_from_disk
 from transformers import (
     AutoConfig,
     AutoModelForCausalLM,
@@ -33,27 +31,14 @@ from transformers import (
     HfArgumentParser,
     AutoTokenizer,
     TrainingArguments,
-    DataCollator,
-    PreTrainedTokenizerBase,
-    PreTrainedModel
+    Trainer,
 )
 from accelerate import Accelerator
-from transformers.trainer_utils import EvalPrediction
 from transformers.trainer_callback import TrainerCallback, TrainerState, TrainerControl
 
 import bitsandbytes as bnb
-from peft import LoraConfig, LoftQConfig
-from trl import SFTTrainer
-from template import templates_lookup
-
-# This example lora fine-tunes Llama v2 model on Jetson AGX Orin
-# Versions used:
-# accelerate == 0.25.0
-# peft == 0.8.2
-# bitsandbytes == 0.41.2
-# transformers == 4.37.2
-# trl == 0.7.10
-# xformers == 0.0.25+d93b3fd.d20240211
+from peft import LoraConfig, LoftQConfig, prepare_model_for_kbit_training, get_peft_model
+from template import templates_lookup, TemplateTokenizer
 
 
 @dataclass
@@ -72,7 +57,7 @@ class ScriptArguments:
     lora_dropout: Optional[float] = field(default=0.05)
     max_seq_length: Optional[int] = field(default=2048)
     base_model: Optional[str] = field(
-        default="elyza/ELYZA-japanese-Llama-2-7b-fast-instruct",
+        default="tokyotech-llm/Swallow-MS-7b-v0.1",
         metadata={
             "help": "The model that you want to train from the Hugging Face hub. E.g. gpt2, gpt2-xl, bert, etc."
         }
@@ -186,6 +171,10 @@ class ScriptArguments:
     use_hf_auth_token: bool = field(
         default=False,
     )
+    use_reentrant: bool = field(
+        default=False
+    )
+
 
 parser = HfArgumentParser(ScriptArguments)
 script_args = parser.parse_args_into_dataclasses()[0]
@@ -209,6 +198,7 @@ def find_all_linear_names(target_model):
 
 
 def create_and_prepare_model(args):
+
     compute_dtype = getattr(torch, args.bnb_4bit_compute_dtype)
 
     if compute_dtype == torch.float16 and args.use_4bit:
@@ -330,6 +320,12 @@ def create_and_prepare_model(args):
                 trust_remote_code=True,
             )
 
+        model = prepare_model_for_kbit_training(
+            model,
+            use_gradient_checkpointing=script_args.gradient_checkpointing,
+            gradient_checkpointing_kwargs={"use_reentrant": script_args.use_reentrant},
+        )
+
         print(model)
 
     if model.config.model_type == 'llama':
@@ -385,7 +381,6 @@ def create_and_prepare_model(args):
             random_state=3407,
             max_seq_length=args.max_seq_length,
         )
-        lora_config = None
 
     else:
         lora_config = LoraConfig(
@@ -399,6 +394,7 @@ def create_and_prepare_model(args):
             target_modules=target_modules,
             fan_in_fan_out=fan_in_fan_out
         )
+        model = get_peft_model(model, lora_config)
 
     if getattr(tokenizer, "pad_token", None) is None:
         tokenizer.pad_token = tokenizer.unk_token
@@ -424,10 +420,10 @@ def create_and_prepare_model(args):
     model.config.eos_token_id = tokenizer.eos_token_id
     model.config.bos_token_id = tokenizer.bos_token_id
 
-    return model, lora_config, tokenizer
+    return model, tokenizer
 
 
-model, lora_config, tokenizer = create_and_prepare_model(script_args)
+model, tokenizer = create_and_prepare_model(script_args)
 model.config.use_cache = False
 
 gradient_checkpointing = script_args.gradient_checkpointing
@@ -453,7 +449,8 @@ training_arguments = TrainingArguments(
     group_by_length=script_args.group_by_length,
     lr_scheduler_type=script_args.lr_scheduler_type,
     gradient_checkpointing=gradient_checkpointing,
-    report_to=script_args.report_to
+    report_to=script_args.report_to,
+    neftune_noise_alpha=script_args.neftune_noise_alpha,
 )
 
 
@@ -463,127 +460,20 @@ class DataCollatorForCompletion:
         self.pad_token_id = pad_token_id
 
     def __call__(self, instances: Sequence[Dict]) -> Dict[str, torch.Tensor]:
-        input_ids, labels = tuple([instance[key] for instance in instances] for key in ("input_ids", "labels"))
+        input_ids, labels = tuple(
+            [instance[key] for instance in instances] for key in ("input_ids", "labels"))
         input_ids = [torch.tensor(x) for x in input_ids]
         input_ids = torch.nn.utils.rnn.pad_sequence(
             input_ids, batch_first=True, padding_value=self.pad_token_id
         )
         labels = [torch.tensor(x) for x in labels]
         labels = torch.nn.utils.rnn.pad_sequence(labels, batch_first=True, padding_value=-100)
+
         return dict(
             input_ids=input_ids,
             labels=labels,
             attention_mask=input_ids.ne(self.pad_token_id)
         )
-
-
-class OnlyInstructSFTTrainer(SFTTrainer):
-    r"""
-       trl DataCollatorForCompletionOnlyLM is not working well.
-    """
-    def __init__(
-        self,
-        model: Union[PreTrainedModel, nn.Module, str] = None,
-        args: TrainingArguments = None,
-        data_collator: Optional[DataCollator] = None,
-        train_dataset: Optional[Dataset] = None,
-        eval_dataset: Optional[Union[Dataset, Dict[str, Dataset]]] = None,
-        tokenizer: Optional[PreTrainedTokenizerBase] = None,
-        model_init: Optional[Callable[[], PreTrainedModel]] = None,
-        compute_metrics: Optional[Callable[[EvalPrediction], Dict]] = None,
-        callbacks: Optional[List[TrainerCallback]] = None,
-        optimizers: Tuple[torch.optim.Optimizer, torch.optim.lr_scheduler.LambdaLR] = (None, None),
-        preprocess_logits_for_metrics: Optional[Callable[[torch.Tensor, torch.Tensor], torch.Tensor]] = None,
-        peft_config: Optional[Dict] = None,
-        dataset_text_field: Optional[str] = None,
-        packing: Optional[bool] = False,
-        formatting_func: Optional[Callable] = None,
-        max_seq_length: Optional[int] = None,
-        num_of_sequences: Optional[int] = 1024,
-        chars_per_token: Optional[float] = 3.6,
-        dataset_num_proc: Optional[int] = None,
-        dataset_batch_size: int = 1000,
-        neftune_noise_alpha=5,
-        model_init_kwargs: Optional[Dict] = None,
-        dataset_kwargs: Optional[Dict] = None,
-        only_instruction: bool = False
-    ):
-        self.only_instruction = only_instruction
-        super().__init__(
-            model=model,
-            args=args,
-            data_collator=data_collator,
-            train_dataset=train_dataset,
-            eval_dataset=eval_dataset,
-            tokenizer=tokenizer,
-            model_init=model_init,
-            compute_metrics=compute_metrics,
-            callbacks=callbacks,
-            optimizers=optimizers,
-            preprocess_logits_for_metrics=preprocess_logits_for_metrics,
-            peft_config=peft_config,
-            dataset_text_field=dataset_text_field,
-            packing=packing,
-            formatting_func=formatting_func,
-            max_seq_length=max_seq_length,
-            num_of_sequences=num_of_sequences,
-            chars_per_token=chars_per_token,
-            dataset_num_proc=dataset_num_proc,
-            dataset_batch_size=dataset_batch_size,
-            neftune_noise_alpha=neftune_noise_alpha,
-            model_init_kwargs=model_init_kwargs,
-            dataset_kwargs=dataset_kwargs,
-        )
-
-    def _prepare_non_packed_dataloader(
-        self, tokenizer, dataset, dataset_text_field, max_seq_length, formatting_func=None, add_special_tokens=False,
-            remove_unused_columns=True,
-    ):
-
-        def tokenize(element):
-            formatted = formatting_func(element)
-            outputs = tokenizer(
-                formatted[0],
-                add_special_tokens=False,
-                truncation=True,
-                padding=False,
-                max_length=max_seq_length,
-                return_overflowing_tokens=False,
-            )
-            if self.only_instruction:
-                instruct = tokenizer(
-                    formatted[1],
-                    add_special_tokens=False,
-                    truncation=True,
-                    padding=False,
-                    max_length=max_seq_length,
-                    return_overflowing_tokens=False,
-                )
-                input_batch = []
-                sources_tokenized_lens = []
-                input_ids_lens = [len(input_id) for input_id in instruct["input_ids"]]
-                for input_length, input_ids in zip(input_ids_lens, outputs["input_ids"]):
-                    if input_length > max_seq_length:
-                        continue
-                    input_batch.append(input_ids)
-                    sources_tokenized_lens.append(input_length)
-                labels = copy.deepcopy(input_batch)
-                for label, source_len in zip(labels, sources_tokenized_lens):
-                    label[:source_len] = [-100] * source_len
-                return {"input_ids": input_batch, "labels": labels}
-            else:
-                labels = copy.deepcopy(outputs["input_ids"])
-                return {"input_ids": outputs["input_ids"], "labels": labels}
-
-        tokenized_dataset = dataset.map(
-            tokenize,
-            batched=True,
-            remove_columns=dataset.column_names,
-            num_proc=self.dataset_num_proc,
-            batch_size=self.dataset_batch_size,
-        )
-
-        return tokenized_dataset
 
 
 eos_token = tokenizer.eos_token
@@ -594,8 +484,6 @@ if not script_args.add_bos_token:
     bos_token = ''
 instruct_template.bos_token = bos_token
 instruct_template.eos_token = eos_token
-
-instruct_columns = ["instruction", "input", "output"]
 
 dataset = None
 for dataset_name in script_args.dataset_name:
@@ -611,26 +499,17 @@ for dataset_name in script_args.dataset_name:
         else:
             dataset_one = load_dataset(dataset_name, split="train")
     if dataset_name == 'sakusakumura/databricks-dolly-15k-ja-scored':
-        dataset_one = dataset_one.filter(lambda example: example["bertscore"]["f1"] > script_args.dolly_ja_score)
+        dataset_one = dataset_one.filter(
+            lambda example: example["bertscore"]["f1"] > script_args.dolly_ja_score)
 
-    dataset_one = dataset_one.shuffle(seed=42)
-    if "input" not in dataset_one.column_names:
-        dataset_one = dataset_one.map(lambda example: {"input": "", **example})
-
-    dataset_one = dataset_one.map(lambda example: {col: example[col] for col in instruct_columns})
-
+    template_tokenizer = TemplateTokenizer(
+        tokenizer, instruct_template, dataset_one, max_seq_length=script_args.max_seq_length,
+        source_mask=script_args.only_instruct)
+    dataset_one = template_tokenizer.tokenize_dataset()
     if dataset is None:
         dataset = dataset_one
     else:
-        common_columns = set(dataset.column_names) & set(dataset_one.column_names)
-        dataset = dataset.map(lambda example: {col: example[col] for col in common_columns})
-        dataset_one = dataset_one.map(lambda example: {col: example[col] for col in common_columns})
         dataset = concatenate_datasets([dataset, dataset_one])
-
-
-neftune_noise_alpha = script_args.neftune_noise_alpha
-if neftune_noise_alpha <= 0:
-    neftune_noise_alpha = None
 
 
 callbacks = []
@@ -655,20 +534,17 @@ if script_args.long_lora:
             return control
     callbacks = [SavePeftModelCallback]
 
+model.config.use_cache = False  # required for gradient checkpointing
+model.enable_input_require_grads()  # required for gradient checkpointing
+model.gradient_checkpointing_enable()  # enable gradient checkpointing
 
-trainer = OnlyInstructSFTTrainer(
+trainer = Trainer(
     model=model,
     callbacks=callbacks,
     train_dataset=dataset,
-    peft_config=lora_config,
-    max_seq_length=script_args.max_seq_length,
-    formatting_func=instruct_template.build_instruct,
-    tokenizer=tokenizer,
     args=training_arguments,
-    packing=False,
-    neftune_noise_alpha=neftune_noise_alpha,
-    data_collator=DataCollatorForCompletion(pad_token_id=tokenizer.pad_token_id),
-    only_instruction=script_args.only_instruct,
+    data_collator=DataCollatorForCompletion(
+        pad_token_id=tokenizer.pad_token_id),
 )
 
 if script_args.long_lora:
