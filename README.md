@@ -7,7 +7,11 @@
 | meta llama2              | jetson agx orin |
 | line-corporation gptneox | jetson agx orin |
 | stabilityai stablelm     | jetson agx orin |
-| matsuo-lab gptneox       | jetson agx orin |
+| deepseek coder           | jetson agx orin |
+| google gemma (bugs?)     | jetson agx orin |
+| Swallow MS 7b v.01       | jetson agx orin |
+| Swallow MX 8x7b NVE v.01 | jetson agx orin |
+
 
 **finetune**
 
@@ -36,42 +40,9 @@ generation_config.json  spiece.model
 pytorch_model.bin       tokenizer.json
 ```
 
-**convert ggml (gptneox)**
-
-```bash
-git clone https://github.com/ggerganov/ggml
-cd ggml
-mkdir build && cd build
-cmake ..
-make -j
-python3 ../examples/gpt-neox/convert-h5-to-ggml.py /path/to/final_merged_checkpoint 1
-```
-
 **webui**
 
 ```bash
-pip3 install ctransformers # or pip install git+https://github.com/marella/ctransformers.git
-pip3 install chainlit
-chainlit run app.py -w
+python3 app.py 
 ```
-![img.png](img.png)
-
-## for jetson orin (on L4T R35.2.1):
-
-**bitsandbytes**
-
-```bash
-git clone https://github.com/to-aoki/bitsandbytes.git
-cd bitsandbytes
-CUDA_VERSION=114 make cuda11x
-python3 setup.py install
-```
-
-**text-generation-webui**
-
-follow jetson (follow python 3.8)
-
-```bash
-git clone https://github.com/oobabooga/text-generation-webui
-(... remove @functools.cache ...)
-```
+![img.png](img_2.png)
