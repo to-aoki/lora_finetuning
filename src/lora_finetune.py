@@ -512,6 +512,8 @@ for dataset_name in script_args.dataset_name:
         dataset = concatenate_datasets([dataset, dataset_one])
 
 
+dataset = dataset.shuffle(seed=42)
+
 callbacks = []
 
 if script_args.long_lora:

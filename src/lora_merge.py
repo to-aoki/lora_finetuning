@@ -20,8 +20,8 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 import torch
-from peft import AutoPeftModelForCausalLM, PeftModel, PeftConfig
-from transformers import AutoTokenizer, HfArgumentParser, AutoModelForCausalLM, AutoConfig
+from peft import PeftModel, PeftConfig
+from transformers import AutoTokenizer, HfArgumentParser, AutoModelForCausalLM, BitsAndBytesConfig
 
 
 @dataclass
@@ -47,11 +47,24 @@ class ScriptArguments:
     unsloth_max_seq_length: Optional[int] = field(
         default=8192  # RoPE max Scaling length
     )
+    load_in_4bit: Optional[bool] = field(
+        default=False,
+    )
+    load_in_8bit: Optional[bool] = field(
+        default=False,
+    )
     unsloth_save_method: Optional[str] = field(
         default="merged_16bit",  # or merged_4bit
     )
     use_unsloth_4bit: Optional[bool] = field(
         default=False,
+    )
+    bf16: Optional[bool] = field(
+        default=True,
+        metadata={"help": "Enables bf16 training."},
+    )
+    device_map: Optional[str] = field(
+        default="auto",  # or merged_4bit
     )
 
 
@@ -67,34 +80,46 @@ if script_args.use_unsloth:
         load_in_4bit=script_args.use_unsloth_4bit,
     )
 else:
-    if script_args.base_model is not None and script_args.base_config_path is not None:
-        config = None
-        if script_args.base_config_path is not None:
-            config = AutoConfig.from_pretrained(script_args.base_config_path)
-        base_model = AutoModelForCausalLM.from_pretrained(
-            script_args.base_model,
-            config=config,
-            device_map="auto",
+    bnb_config = None
+    if script_args.load_in_4bit or script_args.load_in_4bit:
+        compute_dtype = getattr(torch, script_args.bnb_4bit_compute_dtype)
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=script_args.load_in_4bit,
+            load_in_8bit=script_args.load_in_8bit,
+            bnb_4bit_quant_type=script_args.bnb_4bit_quant_type,
+            bnb_4bit_compute_dtype=compute_dtype,
+            bnb_4bit_use_double_quant=script_args.use_nested_quant,
         )
-        base_model_name_or_path = script_args.base_model
-        trainable_params = os.path.join(script_args.merge_target_path, "trainable_params.bin")
-        if os.path.isfile(trainable_params):
-            base_model.load_state_dict(torch.load(trainable_params, map_location=base_model.device), strict=False)
-        model = PeftModel.from_pretrained(
-            base_model,
-            script_args.merge_target_path,
-            device_map="auto",
-        )
-    else:
+    base_model_name_or_path = script_args.base_model
+    if base_model_name_or_path is None:
         base_model_name_or_path = PeftConfig.from_pretrained(
             script_args.merge_target_path).base_model_name_or_path
-        model = AutoPeftModelForCausalLM.from_pretrained(
-            script_args.merge_target_path, device_map="auto",
-        )
+    model = AutoModelForCausalLM.from_pretrained(
+        base_model_name_or_path,
+        quantization_config=bnb_config,
+        device_map=script_args.device_map,
+        torch_dtype=torch.bfloat16 if script_args.bf16 else torch.float16,
+        trust_remote_code=True,
+    )
+    trainable_params = os.path.join(script_args.merge_target_path, "trainable_params.bin")
+    if os.path.isfile(trainable_params):
+        model.load_state_dict(torch.load(trainable_params, map_location=model.device), strict=False)
+    model = PeftModel.from_pretrained(
+        model,
+        script_args.merge_target_path,
+        is_trainable=False,
+        device_map=script_args.device_map,
+        torch_dtype=torch.bfloat16 if script_args.bf16 else torch.float16,
+        trust_remote_code=True
+    )
+
 
 if script_args.use_unsloth:
+    save_method = script_args.unsloth_save_method
+    if script_args.use_unsloth_4bit and save_method != 'merged_4bit_forced':
+        save_method = 'merged_4bit'
     model.save_pretrained_merged(
-        script_args.output_path, tokenizer, save_method=script_args.unsloth_save_method)
+        script_args.output_path, tokenizer, save_method=save_method)
 
 else:
     model = model.merge_and_unload()
