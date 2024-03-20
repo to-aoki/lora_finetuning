@@ -45,4 +45,4 @@ pytorch_model.bin       tokenizer.json
 ```bash
 python3 app.py 
 ```
-![img.png](img_2.png)
+![img.png](img.png)
