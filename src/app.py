@@ -226,6 +226,7 @@ async def gen_stream(
         max_new_tokens=script_args.max_seq_length,
         streamer=streamer,
         do_sample=True,
+        prompt_lookup_num_tokens=10,
         top_p=0.95,
         temperature=0.1,
         repetition_penalty=1.2,

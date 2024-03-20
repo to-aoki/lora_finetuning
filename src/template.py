@@ -115,15 +115,15 @@ class InputTemplate:
             text = self.bos_token + instruction_prompt + self.response_prefix
         return text
 
-    def build_chat(self, message, system_prompt=None, exits_pairs=[]):
-        if len(exits_pairs) == 0:
+    def build_chat(self, message, system_prompt=None, history=[]):
+        if len(history) == 0:
             if count_placeholders(self.conversation_sys) > 1 and system_prompt is not None:
                 prompt = self.conversation_sys.format(system_prompt, message)
             else:
                 prompt = self.conversation_template.format(message)
             return self.bos_token + prompt + self.response_prefix
         else:
-            first_pair = exits_pairs[0]
+            first_pair = history[0]
             [user, assistant] = first_pair
             if count_placeholders(self.conversation_sys) > 1 and system_prompt is not None:
                 first_prompt = self.conversation_sys.format(system_prompt, user)
@@ -132,7 +132,7 @@ class InputTemplate:
             prompt = (self.bos_token + first_prompt + self.response_prefix +
                       assistant + self.response_suffix + self.eos_token)
 
-            for pair in exits_pairs[0:]:
+            for pair in history[1:]:
                 [user, assistant] = pair
                 prompt += (self.bos_token + self.conversation_template.format(user) + self.response_prefix +
                            assistant + self.response_suffix + self.eos_token)
@@ -299,14 +299,14 @@ class TemplateTokenizer:
 
         return {"input_ids": input_ids_list, "labels": labels_list}
 
-    def chat_tokenize(self, message, exits_pairs=[]):
-        prompt = self.template.build_chat(message, system_prompt=self.system_prompt, exits_pairs=exits_pairs)
+    def chat_tokenize(self, message, history=[]):
+        prompt = self.template.build_chat(message, system_prompt=self.system_prompt, history=history)
         input_ids = self.tokenizer(
             prompt, return_tensors="pt", add_special_tokens=False, truncation=False)
         while len(input_ids['input_ids']) > self.max_seq_length:
-            exits_pairs = exits_pairs[1:]
+            history = history[1:]
             self.system_prompt = None
-            prompt = self.template.build_chat(message, system_prompt=self.system_prompt, exits_pairs=exits_pairs)
+            prompt = self.template.build_chat(message, system_prompt=self.system_prompt, history=history)
             input_ids = self.tokenizer(
                 prompt, return_tensors="pt", add_special_tokens=False, truncation=False)
         return input_ids
