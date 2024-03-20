@@ -96,11 +96,11 @@ class InputTemplate:
                 if e['from'] == 'human':
                     found_human = True
                     instruction_prompt = template.format(e['value'])
+                    template = self.conversation_template
                     instruct = self.bos_token + instruction_prompt + self.response_prefix
                 elif e['from'] == 'gpt' and found_human:
                     found_human = False
                     response = e['value'] + self.response_suffix + self.eos_token
-                    template = self.conversation_template
                     full_instructions.append(instruct + response)
                     instructions.append(instruct)
             conversations.append([full_instructions, instructions])
@@ -115,6 +115,30 @@ class InputTemplate:
             text = self.bos_token + instruction_prompt + self.response_prefix
         return text
 
+    def build_chat(self, message, system_prompt=None, exits_pairs=[]):
+        if len(exits_pairs) == 0:
+            if count_placeholders(self.conversation_sys) > 1 and system_prompt is not None:
+                prompt = self.conversation_sys.format(system_prompt, message)
+            else:
+                prompt = self.conversation_template.format(message)
+            return self.bos_token + prompt + self.response_prefix
+        else:
+            first_pair = exits_pairs[0]
+            [user, assistant] = first_pair
+            if count_placeholders(self.conversation_sys) > 1 and system_prompt is not None:
+                first_prompt = self.conversation_sys.format(system_prompt, user)
+            else:
+                first_prompt = self.conversation_template.format(user)
+            prompt = (self.bos_token + first_prompt + self.response_prefix +
+                      assistant + self.response_suffix + self.eos_token)
+
+            for pair in exits_pairs[0:]:
+                [user, assistant] = pair
+                prompt += (self.bos_token + self.conversation_template.format(user) + self.response_prefix +
+                           assistant + self.response_suffix + self.eos_token)
+
+            prompt += (self.bos_token + self.conversation_template.format(message) + self.response_prefix)
+            return prompt
 
 
 templates_lookup = {
@@ -154,8 +178,8 @@ templates_lookup = {
     "youri_chat": InputTemplate(
         input_template="設定: ｛｝\nユーザー: {}\n",
         no_input_template="ユーザー: {}\n",
-        conversation_sys="ユーザー: {}\n",
-        conversation_template="設定: ｛｝\nユーザー: {}\n",
+        conversation_sys="設定: ｛｝\nユーザー: {}\n",
+        conversation_template="ユーザー: {}\n",
         response_prefix="システム: ",
     ),
     "deepseek_coder": InputTemplate(
@@ -202,9 +226,10 @@ class TemplateTokenizer:
     def __init__(
         self, tokenizer: AutoTokenizer,
         template,
-        dataset,
+        dataset=None,
         max_seq_length=2048,
-        source_mask=True
+        source_mask=True,
+        system_prompt=None,
     ):
         self.tokenizer = tokenizer
         self.template = template
@@ -212,14 +237,16 @@ class TemplateTokenizer:
         self.max_seq_length = max_seq_length
         self.source_mask = source_mask
         self.dataset = dataset
-        self.apply_build_function(dataset)
+        if self.dataset is not None:
+            self.apply_build_function()
+        self.system_prompt = system_prompt
 
-    def apply_build_function(self, dataset):
+    def apply_build_function(self):
         if 'conversations' in self.dataset.column_names:
+            # for ShareGPT format
             self.formatting_func = self.template.build_mutil_turn
         else:
             self.formatting_func = self.template.build_instruct
-        self.dataset = dataset
 
     def tokenize_dataset(self, num_proc=None, batch_size=1000):
         return self.dataset.map(
@@ -271,3 +298,16 @@ class TemplateTokenizer:
                 labels_list.extend(labels)
 
         return {"input_ids": input_ids_list, "labels": labels_list}
+
+    def chat_tokenize(self, message, exits_pairs=[]):
+        prompt = self.template.build_chat(message, system_prompt=self.system_prompt, exits_pairs=exits_pairs)
+        input_ids = self.tokenizer(
+            prompt, return_tensors="pt", add_special_tokens=False, truncation=False)
+        while len(input_ids['input_ids']) > self.max_seq_length:
+            exits_pairs = exits_pairs[1:]
+            self.system_prompt = None
+            prompt = self.template.build_chat(message, system_prompt=self.system_prompt, exits_pairs=exits_pairs)
+            input_ids = self.tokenizer(
+                prompt, return_tensors="pt", add_special_tokens=False, truncation=False)
+        return input_ids
+
