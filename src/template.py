@@ -13,6 +13,7 @@ DEFAULT_RESPONSE_SUFFIX = ""
 DEFAULT_DATA_INSTRUCTION_ATTR = "instruction"
 DEFAULT_DATA_OUTPUT_ATTR = "output"
 DEFAULT_DATA_INPUT_ATTR = "input"
+IGNORE_INDEX = -100
 
 
 def count_placeholders(format_string):
@@ -41,6 +42,7 @@ class InputTemplate:
         instruction_attr=DEFAULT_DATA_INSTRUCTION_ATTR,
         output_attr=DEFAULT_DATA_OUTPUT_ATTR,
         input_attr=DEFAULT_DATA_INPUT_ATTR,
+        bos_only_fist=False
     ):
         self.bos_token = bos_token
         self.eos_token = eos_token
@@ -56,6 +58,7 @@ class InputTemplate:
         self.instruction_attr = instruction_attr
         self.output_attr = output_attr
         self.input_attr = input_attr
+        self.bos_only_fist = bos_only_fist
 
     def build_instruct(self, example):
         full_instructions = []
@@ -82,6 +85,9 @@ class InputTemplate:
         return zip(full_instructions, instructions)
 
     def build_mutil_turn(self, example, define_sys=None):
+        bos_token = self.bos_token
+        if self.bos_only_fist:
+            bos_token = ''
         conversations = []
         instruction_histories = example['conversations']
         for episodes in instruction_histories:
@@ -91,19 +97,22 @@ class InputTemplate:
             template = self.conversation_sys
             if self.system_require and define_sys is not None:
                 template = template.format(define_sys, "{}")
+            if self.bos_only_fist:
+                template = self.bos_token + template
             found_human = False
             for e in episodes:
                 if e['from'] == 'human':
                     found_human = True
                     instruction_prompt = template.format(e['value'])
                     template = self.conversation_template
-                    instruct = self.bos_token + instruction_prompt + self.response_prefix
+                    instruct = bos_token + instruction_prompt + self.response_prefix
                 elif e['from'] == 'gpt' and found_human:
                     found_human = False
                     response = e['value'] + self.response_suffix + self.eos_token
                     full_instructions.append(instruct + response)
                     instructions.append(instruct)
             conversations.append([full_instructions, instructions])
+
         return conversations
 
     def build_inference(self, instruction, input=None):
@@ -131,13 +140,15 @@ class InputTemplate:
                 first_prompt = self.conversation_template.format(user)
             prompt = (self.bos_token + first_prompt + self.response_prefix +
                       assistant + self.response_suffix + self.eos_token)
-
+            bos_token = self.bos_token
+            if self.bos_only_fist:
+                bos_token = ''
             for pair in history[1:]:
                 [user, assistant] = pair
-                prompt += (self.bos_token + self.conversation_template.format(user) + self.response_prefix +
+                prompt += (bos_token + self.conversation_template.format(user) + self.response_prefix +
                            assistant + self.response_suffix + self.eos_token)
 
-            prompt += (self.bos_token + self.conversation_template.format(message) + self.response_prefix)
+            prompt += (bos_token + self.conversation_template.format(message) + self.response_prefix)
             return prompt
 
 
@@ -218,7 +229,17 @@ templates_lookup = {
         conversation_template="<start_of_turn>user\n{}<end_of_turn>\n",
         response_prefix="<start_of_turn>model\n",
         # response_suffix="<end_of_turn>\n",  # <end_of_turn>model ? not learning
-    )
+    ),
+    "mistral": InputTemplate(
+        input_template="[INST] {} \n {} ",
+        no_input_template="[INST]　{} ",
+        conversation_sys="[INST] {} ",
+        conversation_template="[INST] {} ",
+        response_prefix="[/INST]\n",
+        bos_only_fist=True
+    ),
+
+
 }
 
 
@@ -262,40 +283,43 @@ class TemplateTokenizer:
         labels_list = []
         formatted_pair = self.formatting_func(element)
         for pair in formatted_pair:
-            outputs = self.tokenizer(
-                pair[0],
-                add_special_tokens=False,
-                truncation=True,
-                padding=False,
-                max_length=self.max_seq_length,
-                return_overflowing_tokens=False,
-            )
-            if self.source_mask:
-                instruct = self.tokenizer(
-                    pair[1],
+            if isinstance(pair[0], str):
+                full_list = [pair[0]]
+                instruct_list = [pair[1]]
+            else:
+                full_list = pair[0]
+                instruct_list = pair[1]
+            inputs_tokenized = []
+            labels_tokenized = []
+            for full, instruct in zip(full_list, instruct_list):
+                output = self.tokenizer(
+                    full,
                     add_special_tokens=False,
                     truncation=True,
                     padding=False,
                     max_length=self.max_seq_length,
                     return_overflowing_tokens=False,
                 )
-                input_batch = []
-                sources_tokenized_lens = []
-                input_ids_lens = [len(input_id) for input_id in instruct["input_ids"]]
-                for input_length, input_ids in zip(input_ids_lens, outputs["input_ids"]):
-                    if input_length > self.max_seq_length:
-                        continue
-                    input_batch.append(input_ids)
-                    sources_tokenized_lens.append(input_length)
-                labels = copy.deepcopy(input_batch)
-                for label, source_len in zip(labels, sources_tokenized_lens):
-                    label[:source_len] = [-100] * source_len
-                input_ids_list.extend(input_batch)
-                labels_list.extend(labels)
-            else:
-                input_ids_list.extend(outputs["input_ids"])
-                labels = copy.deepcopy(outputs["input_ids"])
-                labels_list.extend(labels)
+                labels = copy.deepcopy(output["input_ids"])
+                if len(labels) > self.max_seq_length:
+                    continue
+                if self.source_mask:
+                    source = self.tokenizer(
+                        instruct,
+                        add_special_tokens=False,
+                        truncation=True,
+                        padding=False,
+                        max_length=self.max_seq_length,
+                        return_overflowing_tokens=False,
+                    )
+                    source_ids_lens = len(source["input_ids"])
+                    labels[:source_ids_lens] = [IGNORE_INDEX] * source_ids_lens
+
+                inputs_tokenized.extend(output["input_ids"])
+                labels_tokenized.extend(labels)
+
+            input_ids_list.append(inputs_tokenized)
+            labels_list.append(labels_tokenized)
 
         return {"input_ids": input_ids_list, "labels": labels_list}
 
@@ -303,11 +327,13 @@ class TemplateTokenizer:
         prompt = self.template.build_chat(message, system_prompt=self.system_prompt, history=history)
         input_ids = self.tokenizer(
             prompt, return_tensors="pt", add_special_tokens=False, truncation=False)
-        while len(input_ids['input_ids']) > self.max_seq_length:
-            history = history[1:]
-            self.system_prompt = None
-            prompt = self.template.build_chat(message, system_prompt=self.system_prompt, history=history)
-            input_ids = self.tokenizer(
-                prompt, return_tensors="pt", add_special_tokens=False, truncation=False)
+        if len(input_ids['input_ids']) > self.max_seq_length:
+            while len(input_ids['input_ids']) > self.max_seq_length:
+                history = history[1:]
+                self.system_prompt = None
+                prompt = self.template.build_chat(message, system_prompt=self.system_prompt, history=history)
+                input_ids = self.tokenizer(
+                    prompt, return_tensors="pt", add_special_tokens=False, truncation=False)
+
         return input_ids
 
