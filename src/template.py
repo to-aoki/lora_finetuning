@@ -302,7 +302,7 @@ class TemplateTokenizer:
                 )
                 labels = copy.deepcopy(output["input_ids"])
                 if len(labels) > self.max_seq_length:
-                    continue
+                    break
                 if self.source_mask:
                     source = self.tokenizer(
                         instruct,
@@ -315,9 +315,14 @@ class TemplateTokenizer:
                     source_ids_lens = len(source["input_ids"])
                     labels[:source_ids_lens] = [IGNORE_INDEX] * source_ids_lens
 
+                if (len(labels_tokenized) + len(labels)) > self.max_seq_length:
+                    break
+
                 inputs_tokenized.extend(output["input_ids"])
                 labels_tokenized.extend(labels)
 
+            if len(inputs_tokenized) > self.max_seq_length:
+                continue
             input_ids_list.append(inputs_tokenized)
             labels_list.append(labels_tokenized)
 
