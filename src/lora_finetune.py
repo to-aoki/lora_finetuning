@@ -49,11 +49,11 @@ class ScriptArguments:
     per_device_train_batch_size: Optional[int] = field(default=8)
     per_device_eval_batch_size: Optional[int] = field(default=1)
     gradient_accumulation_steps: Optional[int] = field(default=4)
-    learning_rate: Optional[float] = field(default=3e-5)
+    learning_rate: Optional[float] = field(default=5e-5)
     max_grad_norm: Optional[float] = field(default=0.3)
     weight_decay: Optional[int] = field(default=0.001)
-    lora_alpha: Optional[int] = field(default=16)
-    lora_r: Optional[int] = field(default=8)
+    lora_alpha: Optional[int] = field(default=64)
+    lora_r: Optional[int] = field(default=16)
     lora_dropout: Optional[float] = field(default=0.05)
     max_seq_length: Optional[int] = field(default=2048)
     base_model: Optional[str] = field(
@@ -107,7 +107,7 @@ class ScriptArguments:
         metadata={"help": "The optimizer to use."},
     )
     lr_scheduler_type: str = field(
-        default="constant",
+        default="cosine",
         metadata={"help": "Learning rate schedule. Constant a bit better than cosine, and has advantage for analysis"},
     )
     max_steps: int = field(default=-1, metadata={"help": "How many optimizer update steps to take"})
@@ -181,8 +181,8 @@ script_args = parser.parse_args_into_dataclasses()[0]
 
 instruct_template = templates_lookup.get(script_args.prompt_format)
 
-
 accelerator = Accelerator()
+
 
 def find_all_linear_names(target_model):
     # https://note.com/npaka/n/na506c63b8cc9#260d93c9-2984-4a34-8118-8f68d64655b6
@@ -427,9 +427,6 @@ model, tokenizer = create_and_prepare_model(script_args)
 model.config.use_cache = False
 
 gradient_checkpointing = script_args.gradient_checkpointing
-if model.config.model_type == 'phi-msft':
-    # too large (2024-01-07)
-    gradient_checkpointing = False
 
 training_arguments = TrainingArguments(
     output_dir=script_args.output_dir,
@@ -536,9 +533,10 @@ if script_args.long_lora:
             return control
     callbacks = [SavePeftModelCallback]
 
-model.config.use_cache = False  # required for gradient checkpointing
-model.enable_input_require_grads()  # required for gradient checkpointing
-model.gradient_checkpointing_enable()  # enable gradient checkpointing
+if gradient_checkpointing:
+    model.config.use_cache = False  # required for gradient checkpointing
+    model.enable_input_require_grads()  # required for gradient checkpointing
+    model.gradient_checkpointing_enable()  # enable gradient checkpointing
 
 trainer = Trainer(
     model=model,

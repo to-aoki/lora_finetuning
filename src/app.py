@@ -75,6 +75,10 @@ class ScriptArguments:
         default="nf4",
         metadata={"help": "Quantization type fp4 or nf4"},
     )
+    repetition_penalty: Optional[float] = field(
+        default=1.2,
+    )
+
     server_port: Optional[int] = field(default=7860)
 
 
@@ -229,9 +233,9 @@ async def gen_stream(
         prompt_lookup_num_tokens=10,
         top_p=0.95,
         temperature=0.1,
-        repetition_penalty=1.2,
+        repetition_penalty=script_args.repetition_penalty,
         num_return_sequences=1,
-        num_beams=1,  # 現時点では2以上を設定するとエラー (ビームサーチは使えない)
+        num_beams=1,
     )
 
     thread = Thread(target=model.generate, kwargs=config)
