@@ -94,13 +94,23 @@ else:
     if base_model_name_or_path is None:
         base_model_name_or_path = PeftConfig.from_pretrained(
             script_args.merge_target_path).base_model_name_or_path
-    model = AutoModelForCausalLM.from_pretrained(
-        base_model_name_or_path,
-        quantization_config=bnb_config,
-        device_map=script_args.device_map,
-        torch_dtype=torch.bfloat16 if script_args.bf16 else torch.float16,
-        trust_remote_code=True,
-    )
+
+    if bnb_config is not None:
+        model = AutoModelForCausalLM.from_pretrained(
+            base_model_name_or_path,
+            quantization_config=bnb_config,
+            device_map=script_args.device_map,
+            torch_dtype=torch.bfloat16 if script_args.bf16 else torch.float16,
+            trust_remote_code=True,
+        )
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            base_model_name_or_path,
+            device_map=script_args.device_map,
+            torch_dtype=torch.bfloat16 if script_args.bf16 else torch.float16,
+            trust_remote_code=True,
+        )
+
     trainable_params = os.path.join(script_args.merge_target_path, "trainable_params.bin")
     if os.path.isfile(trainable_params):
         model.load_state_dict(torch.load(trainable_params, map_location=model.device), strict=False)

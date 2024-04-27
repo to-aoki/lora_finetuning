@@ -62,6 +62,12 @@ class ScriptArguments:
             "help": "The model that you want to train from the Hugging Face hub. E.g. gpt2, gpt2-xl, bert, etc."
         }
     )
+    tokenizer_path: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "The tokenizer that you want to train from the Hugging Face hub. E.g. gpt2, gpt2-xl, bert, etc."
+        }
+    )
     dataset_name: Optional[List[str]] = field(
         default_factory=lambda: ['sakusakumura/databricks-dolly-15k-ja-scored'],
         metadata={"help": "The preference dataset to use."},
@@ -165,14 +171,14 @@ class ScriptArguments:
     with_loftq: bool = field(
         default=False,  # initialize slow
     )
-    origin_tokenizer: bool = field(
-        default=True,
-    )
     use_hf_auth_token: bool = field(
         default=False,
     )
     use_reentrant: bool = field(
         default=False
+    )
+    trust_remote_code: bool = field(
+        default=True
     )
 
 
@@ -225,7 +231,25 @@ def create_and_prepare_model(args):
     # switch to `device_map = "auto"` for multi-GPU
     device_map = "auto"
 
-    config = AutoConfig.from_pretrained(args.base_model, trust_remote_code=True)
+    # require flash-attn or torch 2.1 later
+    attn_impl = None
+    if args.use_sdpa:
+        attn_impl = "sdpa"
+    if args.use_flash_attention_2:
+        # RuntimeError: FlashAttention backward for head dim > 192 requires A100/A800 or H100/H800
+        # FlashAttention v2.5.5 support
+        attn_impl = "flash_attention_2"
+
+    long_lora = False
+    try:
+        config = AutoConfig.from_pretrained(args.base_model, trust_remote_code=args.trust_remote_code)
+        if config.model_type == 'gpt2':
+            attn_impl = "eager"
+        if args.long_lora and (config.model_type == "gpt-neox" or config.model_type == "llama"):
+            long_lora = True
+    except:
+        # OSError: models does not appear to have a file named configuration_cohere.py. Checkout 'models/main' for available files.
+        pass
 
     if args.with_unsloth:
         from unsloth import FastLanguageModel
@@ -236,20 +260,10 @@ def create_and_prepare_model(args):
             load_in_4bit=False if args.with_loftq else args.use_4bit,
             load_in_8bit=False if args.with_loftq or args.use_4bit else True,
         )
+        if args.tokenizer_path is not None:
+            tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_path)
     else:
-        # require flash-attn or torch 2.1 later
-        attn_impl = None
-        if args.use_sdpa:
-            attn_impl = "sdpa"
-        if args.use_flash_attention_2:
-            # RuntimeError: FlashAttention backward for head dim > 192 requires A100/A800 or H100/H800
-            # FlashAttention v2.5.5 support
-            attn_impl = "flash_attention_2"
-
-        if config.model_type == 'gpt2':
-            attn_impl = "eager"
-
-        if args.long_lora and (config.model_type == "gpt-neox" or config.model_type == "llama"):
+        if long_lora:
             print('with long_lora')
             orig_rope_scaling = getattr(config, "rope_scaling", None)
             if orig_rope_scaling is None:
@@ -276,54 +290,57 @@ def create_and_prepare_model(args):
                     config.max_position_embeddings = args.max_seq_length
                     config.save_pretrained(args.output_dir)
 
-        if bool(re.match(r'.*japanese-stablelm.*alpha.*', script_args.base_model)):
+        tokenizer_path = args.base_model
+        if args.tokenizer_path is not None:
+            tokenizer_path = args.tokenizer_path
+
+        if bool(re.match(r'.*japanese-stablelm.*alpha.*', args.base_model)):
             print("ja-stablelm-alpha")
             from transformers import LlamaTokenizer
             tokenizer = LlamaTokenizer.from_pretrained(
                 "novelai/nerdstash-tokenizer-v1",
                 use_fast=False,  # lm-evaluate scripts use_fast=False
-                trust_remote_code=True,
+                trust_remote_code=args.trust_remote_code,
                 additional_special_tokens=['▁▁']
             )
             print('nai tokenizer loaded')
-        elif script_args.base_model.startswith(("rinna/", "line-corporation/japanese-large")):
+        elif args.base_model.startswith(("rinna/", "line-corporation/japanese-large")):
             tokenizer = AutoTokenizer.from_pretrained(
-                script_args.base_model,
+                tokenizer_path,
                 use_fast=False,
             )
             print('use_fast=False tokenizer loaded')
         else:
             tokenizer = AutoTokenizer.from_pretrained(
-                script_args.base_model,
+                tokenizer_path,
                 use_fast=True,
-                trust_remote_code=True,
+                trust_remote_code=args.trust_remote_code,
             )
+
         if args.with_loftq:
             model = AutoModelForCausalLM.from_pretrained(
                 args.base_model,
-                config=config,
                 device_map=device_map,
                 use_auth_token=args.use_hf_auth_token,
-                torch_dtype=torch.bfloat16 if script_args.bf16 else torch.float16,
+                torch_dtype=torch.bfloat16 if args.bf16 else torch.float16,
                 attn_implementation=attn_impl,
-                trust_remote_code=True,
+                trust_remote_code=args.trust_remote_code,
             )
         else:
             model = AutoModelForCausalLM.from_pretrained(
                 args.base_model,
                 quantization_config=bnb_config,
-                config=config,
                 device_map=device_map,
                 use_auth_token=args.use_hf_auth_token,
-                torch_dtype=torch.bfloat16 if script_args.bf16 else torch.float16,
+                torch_dtype=torch.bfloat16 if args.bf16 else torch.float16,
                 attn_implementation=attn_impl,
-                trust_remote_code=True,
+                trust_remote_code=args.trust_remote_code,
             )
 
         model = prepare_model_for_kbit_training(
             model,
-            use_gradient_checkpointing=script_args.gradient_checkpointing,
-            gradient_checkpointing_kwargs={"use_reentrant": script_args.use_reentrant},
+            use_gradient_checkpointing=args.gradient_checkpointing,
+            gradient_checkpointing_kwargs={"use_reentrant": args.use_reentrant},
         )
 
         print(model)
@@ -398,8 +415,10 @@ def create_and_prepare_model(args):
 
     if getattr(tokenizer, "pad_token", None) is None:
         tokenizer.pad_token = tokenizer.unk_token
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
 
-    if tokenizer.pad_token_id == tokenizer.eos_token_id:
+    if tokenizer.pad_token_id == tokenizer.eos_token_id and tokenizer.unk_token is not None:
         tokenizer.pad_token = tokenizer.unk_token
 
     tokenizer.padding_side = "right"
@@ -413,7 +432,7 @@ def create_and_prepare_model(args):
     print(tokenizer.padding_side)
     print("=" * 80)
 
-    if script_args.base_model.startswith("meta-llama/Llama-2"):
+    if args.base_model.startswith("meta-llama/Llama-2"):
         # check: https://github.com/huggingface/transformers/pull/24906
         model.config.pretraining_tp = 1
 
@@ -554,7 +573,6 @@ trainer.train()
 trainer.save_state()
 output_dir = os.path.join(script_args.output_dir, "final_checkpoints")
 trainer.model.save_pretrained(output_dir)
-tokenizer = AutoTokenizer.from_pretrained(script_args.base_model)
 tokenizer.save_pretrained(output_dir)
 
 if script_args.long_lora:

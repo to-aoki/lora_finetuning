@@ -154,23 +154,32 @@ else:
             )
         base_model_name_or_path = PeftConfig.from_pretrained(
             script_args.lora_model).base_model_name_or_path
-        model = AutoModelForCausalLM.from_pretrained(
-            base_model_name_or_path,
-            quantization_config=bnb_config,
-            device_map="auto",
-            torch_dtype=torch.bfloat16 if script_args.bf16 else torch.float16,
-            attn_implementation=attn_impl,
-            trust_remote_code=True,
-        )
-        model = PeftModel.from_pretrained(
-            model,
-            script_args.lora_model,
-            is_trainable=False,
-            attn_implementation=attn_impl,
-            device_map="auto",
-            torch_dtype=torch.bfloat16 if script_args.bf16 else torch.float16,
-            trust_remote_code=True
-        )
+        if bnb_config is not None:
+            model = AutoModelForCausalLM.from_pretrained(
+                base_model_name_or_path,
+                quantization_config=bnb_config,
+                device_map="auto",
+                torch_dtype=torch.bfloat16 if script_args.bf16 else torch.float16,
+                attn_implementation=attn_impl,
+                trust_remote_code=True,
+            )
+            model = PeftModel.from_pretrained(
+                model,
+                script_args.lora_model,
+                is_trainable=False,
+                attn_implementation=attn_impl,
+                device_map="auto",
+                torch_dtype=torch.bfloat16 if script_args.bf16 else torch.float16,
+                trust_remote_code=True
+            )
+        else:
+            model = AutoModelForCausalLM.from_pretrained(
+                base_model_name_or_path,
+                device_map="auto",
+                torch_dtype=torch.bfloat16 if script_args.bf16 else torch.float16,
+                attn_implementation=attn_impl,
+                trust_remote_code=True,
+            )
 
 tokenizer_path = script_args.lora_model
 if script_args.tokenizer_model is not None:
@@ -222,20 +231,23 @@ streamer = TextIteratorStreamer(
 
 # ストリーマーを返してあげる関数
 async def gen_stream(
-    input_ids,
+    input_ids, eos_token
 ) -> TextIteratorStreamer:
+
+    if eos_token is None:
+        eos_token_id = tokenizer.eos_token_id
+    else:
+        eos_token_id = tokenizer.convert_tokens_to_ids(eos_token)
 
     config = dict(
         **input_ids,
         max_new_tokens=script_args.max_seq_length,
         streamer=streamer,
         do_sample=True,
-        prompt_lookup_num_tokens=10,
         top_p=0.95,
         temperature=0.1,
         repetition_penalty=script_args.repetition_penalty,
-        num_return_sequences=1,
-        num_beams=1,
+        eos_token_id=eos_token_id
     )
 
     thread = Thread(target=model.generate, kwargs=config)
@@ -246,19 +258,16 @@ async def gen_stream(
 
 async def chat(message, history):
     input_ids = template_tokenizer.chat_tokenize(message, history).to(model.device)
-    streamer = await gen_stream(input_ids)
+    streamer = await gen_stream(input_ids, template_tokenizer.replace_eos)
 
     total_response = ""
     for output in streamer:
         if not output:
             continue
-        # output は新たにデコードされた文字のみが入っている
         total_response += output
         total_response = "\n".join(
             [line.lstrip() for line in total_response.split("\n")]
-        )  # 左側に謎の空白が発生する場合があるので除去する
-        # ここでは新規の文字ではなく応答文全体を返す必要がある
-        # そのため過去に生成した文字はとっておく必要がある
+        )
         yield total_response
 
 

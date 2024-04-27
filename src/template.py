@@ -13,6 +13,7 @@ DEFAULT_RESPONSE_SUFFIX = ""
 DEFAULT_DATA_INSTRUCTION_ATTR = "instruction"
 DEFAULT_DATA_OUTPUT_ATTR = "output"
 DEFAULT_DATA_INPUT_ATTR = "input"
+DEFAULT_REPLACE_EOS = None
 IGNORE_INDEX = -100
 
 
@@ -42,7 +43,9 @@ class InputTemplate:
         instruction_attr=DEFAULT_DATA_INSTRUCTION_ATTR,
         output_attr=DEFAULT_DATA_OUTPUT_ATTR,
         input_attr=DEFAULT_DATA_INPUT_ATTR,
-        bos_only_fist=False
+        bos_only_first=False,
+        eos_only_end=False,
+        replace_eos=DEFAULT_REPLACE_EOS,
     ):
         self.bos_token = bos_token
         self.eos_token = eos_token
@@ -58,7 +61,9 @@ class InputTemplate:
         self.instruction_attr = instruction_attr
         self.output_attr = output_attr
         self.input_attr = input_attr
-        self.bos_only_fist = bos_only_fist
+        self.bos_only_first = bos_only_first
+        self.eos_only_end = eos_only_end
+        self.replace_eos = replace_eos
 
     def build_instruct(self, example):
         full_instructions = []
@@ -86,8 +91,11 @@ class InputTemplate:
 
     def build_mutil_turn(self, example, define_sys=None):
         bos_token = self.bos_token
-        if self.bos_only_fist:
+        if self.bos_only_first:
             bos_token = ''
+        eos_token = self.eos_token
+        if self.eos_only_end:
+            eos_token = ''
         conversations = []
         instruction_histories = example['conversations']
         for episodes in instruction_histories:
@@ -97,7 +105,9 @@ class InputTemplate:
             template = self.conversation_sys
             if self.system_require and define_sys is not None:
                 template = template.format(define_sys, "{}")
-            if self.bos_only_fist:
+            else:
+                template = self.conversation_template
+            if self.bos_only_first:
                 template = self.bos_token + template
             found_human = False
             for e in episodes:
@@ -108,9 +118,11 @@ class InputTemplate:
                     instruct = bos_token + instruction_prompt + self.response_prefix
                 elif e['from'] == 'gpt' and found_human:
                     found_human = False
-                    response = e['value'] + self.response_suffix + self.eos_token
+                    response = e['value'] + self.response_suffix + eos_token
                     full_instructions.append(instruct + response)
                     instructions.append(instruct)
+            if self.eos_only_end:
+                full_instructions[-1] = full_instructions[-1] + self.eos_token
             conversations.append([full_instructions, instructions])
 
         return conversations
@@ -141,7 +153,7 @@ class InputTemplate:
             prompt = (self.bos_token + first_prompt + self.response_prefix +
                       assistant + self.response_suffix + self.eos_token)
             bos_token = self.bos_token
-            if self.bos_only_fist:
+            if self.bos_only_first:
                 bos_token = ''
             for pair in history[1:]:
                 [user, assistant] = pair
@@ -170,7 +182,7 @@ templates_lookup = {
         no_input_template="[INST] {} ",
         conversation_sys="[INST] {} ",
         conversation_template="[INST] {} ",
-        response_prefix="[/INST]\n"
+        response_prefix="[/INST] "
     ),
     "elyza_instruct": InputTemplate(
         input_template="[INST] <<SYS>>\nあなたは誠実で優秀な日本人のアシスタントです。\n<</SYS>>\n\n{}\n{} ",
@@ -236,10 +248,49 @@ templates_lookup = {
         conversation_sys="[INST] {} ",
         conversation_template="[INST] {} ",
         response_prefix="[/INST]\n",
-        bos_only_fist=True
+        bos_only_first=True
     ),
-
-
+    "chatml": InputTemplate(
+        input_template="<|im_start|>user\n{}\n{}<|im_end|>\n",
+        no_input_template="<|im_start|>user\n{}<|im_end|>\n",
+        conversation_sys="<|im_start|>system\n{}<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n",
+        conversation_template="<|im_start|>user\n{}<|im_end|>\n",
+        response_prefix="<|im_start|>assistant\n",
+        response_suffix="<|im_end|>\n",
+        bos_only_first=True,
+        eos_only_end=True
+    ),
+    "command-r": InputTemplate(
+        input_template="<|START_OF_TURN_TOKEN|><|USER_TOKEN|>{}\n{}<|END_OF_TURN_TOKEN|>",
+        no_input_template="<|START_OF_TURN_TOKEN|><|USER_TOKEN|>{}<|END_OF_TURN_TOKEN|>",
+        conversation_sys="<|START_OF_TURN_TOKEN|><|SYSTEM_TOKEN|>{}<|END_OF_TURN_TOKEN|>"
+                         "<|START_OF_TURN_TOKEN|><|USER_TOKEN|>{}<|END_OF_TURN_TOKEN|>",
+        conversation_template="<|START_OF_TURN_TOKEN|><|USER_TOKEN|>{}<|END_OF_TURN_TOKEN|>",
+        response_prefix="<|START_OF_TURN_TOKEN|><|CHATBOT_TOKEN|>",
+        bos_only_first=True,
+    ),
+    "llama3_chat": InputTemplate(
+        input_template="<|start_header_id|>user<|end_header_id|>\n\n{}\n{}<|eot_id|>",
+        no_input_template="<|start_header_id|>user<|end_header_id|>\n\n{}<|eot_id|>",
+        conversation_sys="<|start_header_id|>system<|end_header_id|>\n\nYou are a helpful AI assistant.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\n{}<|eot_id|>",
+        conversation_template="<|start_header_id|>user<|end_header_id|>\n\n{}<|eot_id|>",
+        response_prefix="<|start_header_id|>assistant<|end_header_id|>\n\n",
+        response_suffix='<|eot_id|>',
+        bos_only_first=True,
+        eos_only_end=True,
+        replace_eos='<|eot_id|>'
+    ),
+    "phi3_instruct": InputTemplate(
+        input_template="<|system|>\nYou are a helpful AI assistant.<|end|>\n<|user|>\n{}\n{}<|end|>\n",
+        no_input_template="<|system|>\nYou are a helpful AI assistant.<|end|>\n<|user|>\n{}<|end|>\n",
+        conversation_sys="<|system|>\nYou are a helpful AI assistant.<|end|>\n<|user|>\n{}<|end|>\n",
+        conversation_template="<|user|>\n{}<|end|>\n",
+        response_prefix="<|assistant|>\n",
+        response_suffix='<|end|>\n',
+        bos_only_first=True,
+        eos_only_end=True,
+        replace_eos='<|end|>'
+    ),
 }
 
 
@@ -261,6 +312,7 @@ class TemplateTokenizer:
         if self.dataset is not None:
             self.apply_build_function()
         self.system_prompt = system_prompt
+        self.replace_eos = template.replace_eos
 
     def apply_build_function(self):
         if 'conversations' in self.dataset.column_names:
@@ -334,8 +386,7 @@ class TemplateTokenizer:
             prompt, return_tensors="pt", add_special_tokens=False, truncation=False)
         if len(input_ids['input_ids']) > self.max_seq_length:
             while len(input_ids['input_ids']) > self.max_seq_length:
-                history = history[1:]
-                self.system_prompt = None
+                del history[1]
                 prompt = self.template.build_chat(message, system_prompt=self.system_prompt, history=history)
                 input_ids = self.tokenizer(
                     prompt, return_tensors="pt", add_special_tokens=False, truncation=False)

@@ -145,23 +145,33 @@ else:
             )
         base_model_name_or_path = PeftConfig.from_pretrained(
             script_args.lora_model).base_model_name_or_path
-        model = AutoModelForCausalLM.from_pretrained(
-            base_model_name_or_path,
-            quantization_config=bnb_config,
-            device_map="auto",
-            torch_dtype=torch.bfloat16 if script_args.bf16 else torch.float16,
-            attn_implementation=attn_impl,
-            trust_remote_code=True,
-        )
-        model = PeftModel.from_pretrained(
-            model,
-            script_args.lora_model,
-            is_trainable=False,
-            attn_implementation=attn_impl,
-            device_map="auto",
-            torch_dtype=torch.bfloat16 if script_args.bf16 else torch.float16,
-            trust_remote_code=True
-        )
+        if bnb_config is not None:
+            model = AutoModelForCausalLM.from_pretrained(
+                base_model_name_or_path,
+                quantization_config=bnb_config,
+                device_map="auto",
+                torch_dtype=torch.bfloat16 if script_args.bf16 else torch.float16,
+                attn_implementation=attn_impl,
+                trust_remote_code=True,
+            )
+            model = PeftModel.from_pretrained(
+                model,
+                script_args.lora_model,
+                is_trainable=False,
+                attn_implementation=attn_impl,
+                device_map="auto",
+                torch_dtype=torch.bfloat16 if script_args.bf16 else torch.float16,
+                trust_remote_code=True
+            )
+        else:
+            model = AutoModelForCausalLM.from_pretrained(
+                base_model_name_or_path,
+                device_map="auto",
+                torch_dtype=torch.bfloat16 if script_args.bf16 else torch.float16,
+                attn_implementation=attn_impl,
+                trust_remote_code=True,
+            )
+
 
 tokenizer_path = script_args.lora_model
 if script_args.tokenizer_model is not None:
@@ -196,22 +206,32 @@ if not script_args.add_bos_token:
 instruct_template.bos_token = bos_token
 instruct_template.eos_token = eos_token
 
+chat = [
+    {"role": "user", "content": "色即是空"},
+    {"role": "assistant", "content": "空即是色"},
+]
+print(tokenizer.apply_chat_template(chat, tokenize=False))
 
-def generate(prompt):
+def generate(prompt, eos_token=None):
     inputs = tokenizer(prompt, return_tensors='pt',
                        add_special_tokens=False,
                        return_token_type_ids=False,  # is_trainable=False
                        ).to(model.device)
     input_length = inputs.input_ids.shape[1]
+
+    if eos_token is None:
+        eos_token_id = tokenizer.eos_token_id
+    else:
+        eos_token_id = tokenizer.convert_tokens_to_ids(eos_token)
+
     outputs = model.generate(
         **inputs,
-        prompt_lookup_num_tokens=10, 
         max_new_tokens=script_args.max_seq_length,
         do_sample=script_args.do_sample,
         top_p=0.95,
         temperature=0.2,
         repetition_penalty=1.1,
-        eos_token_id=tokenizer.eos_token_id)
+        eos_token_id=eos_token_id)
 
     output_str = tokenizer.decode(
         outputs[0][input_length:], skip_special_tokens=False)
@@ -220,15 +240,18 @@ def generate(prompt):
 
 
 text = instruct_template.build_inference("pythonでHello,worldと出力するコードを記述してください。")
-print(text, generate(text))
+print(text, generate(text, instruct_template.replace_eos))
+
+text = instruct_template.build_inference("pythonでtransformersを用いてとGPT2を訓練するコードを記述してください。")
+print(text, generate(text, instruct_template.replace_eos))
 
 text = instruct_template.build_inference("光の三原色は？")
-print(text, generate(text))
+print(text, generate(text, instruct_template.replace_eos))
 
 text = instruct_template.build_inference("日本で1番高い山は富士山です。では2番目に高い山は？")
-print(text, generate(text))
+print(text, generate(text, instruct_template.replace_eos))
 
 text = instruct_template.build_inference("紫式部と清少納言の作風をjsonで出力してください。")
-print(text, generate(text))
+print(text, generate(text, instruct_template.replace_eos))
 
 
