@@ -281,9 +281,9 @@ templates_lookup = {
         replace_eos='<|eot_id|>'
     ),
     "phi3_instruct": InputTemplate(
-        input_template="<|system|>\nYou are a helpful AI assistant.<|end|>\n<|user|>\n{}\n{}<|end|>\n",
-        no_input_template="<|system|>\nYou are a helpful AI assistant.<|end|>\n<|user|>\n{}<|end|>\n",
-        conversation_sys="<|system|>\nYou are a helpful AI assistant.<|end|>\n<|user|>\n{}<|end|>\n",
+        input_template="<|user|>\n{}\n{}<|end|>\n",
+        no_input_template="<|user|>\n{}<|end|>\n",
+        conversation_sys="<|user|>\n{}<|end|>\n",
         conversation_template="<|user|>\n{}<|end|>\n",
         response_prefix="<|assistant|>\n",
         response_suffix='<|end|>\n',

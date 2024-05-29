@@ -64,9 +64,20 @@ class ScriptArguments:
         metadata={"help": "Enables bf16 training."},
     )
     device_map: Optional[str] = field(
-        default="auto",  # or merged_4bit
+        default="auto",
     )
-
+    bnb_4bit_compute_dtype: Optional[str] = field(
+        default="bfloat16",
+        metadata={"help": "Compute dtype for 4bit base models"},
+    )
+    bnb_4bit_quant_type: Optional[str] = field(
+        default="nf4",
+        metadata={"help": "Quantization type fp4 or nf4"},
+    )
+    use_nested_quant: Optional[bool] = field(
+        default=True,
+        metadata={"help": "Activate nested quantization for 4bit base models"},
+    )
 
 parser = HfArgumentParser(ScriptArguments)
 script_args = parser.parse_args_into_dataclasses()[0]
@@ -133,6 +144,31 @@ if script_args.use_unsloth:
 
 else:
     model = model.merge_and_unload()
+    if script_args.load_in_4bit:
+        # TODO 8bit
+        import bitsandbytes as bnb
+        from peft.utils import _get_submodules
+        from bitsandbytes.functional import dequantize_4bit
+        import copy
+        cls = bnb.nn.Linear4bit
+        dtype = torch.bfloat16 if script_args.bf16 else torch.float16
+        with torch.no_grad():
+            for name, module in model.named_modules():
+                if isinstance(module, cls):
+                    print(f"Dequantizing `{name}`...")
+                    quant_state = copy.deepcopy(module.weight.quant_state)
+                    #print(quant_state)
+                    # quant_state[2] = dtype
+                    weights = dequantize_4bit(module.weight.data, quant_state=quant_state, quant_type="nf4").to(dtype)
+
+                    new_module = torch.nn.Linear(module.in_features, module.out_features, bias=None, dtype=dtype)
+                    new_module.weight = torch.nn.Parameter(weights)
+                    new_module.to(device=script_args.device_map, dtype=dtype)
+
+                    parent, target, target_name = _get_submodules(model, name)
+                    setattr(parent, target_name, new_module)
+
+            model.is_loaded_in_4bit = False
     model.save_pretrained(script_args.output_path,
                           safe_serialization=not script_args.without_safe_serialization)
     if tokenizer is None:

@@ -180,7 +180,9 @@ class ScriptArguments:
     trust_remote_code: bool = field(
         default=True
     )
-
+    without_lora: bool = field(
+        default=False
+    )
 
 parser = HfArgumentParser(ScriptArguments)
 script_args = parser.parse_args_into_dataclasses()[0]
@@ -219,7 +221,7 @@ def create_and_prepare_model(args):
     if args.with_loftq:
         init_lora_weights = 'loftq'
         loftq_config = LoftQConfig(loftq_bits=4 if args.use_4bit else 8, loftq_iter=1)
-    elif not args.with_unsloth:
+    elif not args.with_unsloth and not args.without_lora:
         bnb_config = BitsAndBytesConfig(
             load_in_4bit=args.use_4bit,
             bnb_4bit_quant_type=args.bnb_4bit_quant_type,
@@ -327,21 +329,31 @@ def create_and_prepare_model(args):
                 trust_remote_code=args.trust_remote_code,
             )
         else:
-            model = AutoModelForCausalLM.from_pretrained(
-                args.base_model,
-                quantization_config=bnb_config,
-                device_map=device_map,
-                use_auth_token=args.use_hf_auth_token,
-                torch_dtype=torch.bfloat16 if args.bf16 else torch.float16,
-                attn_implementation=attn_impl,
-                trust_remote_code=args.trust_remote_code,
+            if not args.without_lora:
+                model = AutoModelForCausalLM.from_pretrained(
+                    args.base_model,
+                    quantization_config=bnb_config,
+                    device_map=device_map,
+                    use_auth_token=args.use_hf_auth_token,
+                    torch_dtype=torch.bfloat16 if args.bf16 else torch.float16,
+                    attn_implementation=attn_impl,
+                    trust_remote_code=args.trust_remote_code,
+                )
+            else:
+                model = AutoModelForCausalLM.from_pretrained(
+                    args.base_model,
+                    device_map=device_map,
+                    use_auth_token=args.use_hf_auth_token,
+                    torch_dtype=torch.bfloat16 if args.bf16 else torch.float16,
+                    attn_implementation=attn_impl,
+                    trust_remote_code=args.trust_remote_code,
+                )
+        if not args.without_lora:
+            model = prepare_model_for_kbit_training(
+                model,
+                use_gradient_checkpointing=args.gradient_checkpointing,
+                gradient_checkpointing_kwargs={"use_reentrant": args.use_reentrant},
             )
-
-        model = prepare_model_for_kbit_training(
-            model,
-            use_gradient_checkpointing=args.gradient_checkpointing,
-            gradient_checkpointing_kwargs={"use_reentrant": args.use_reentrant},
-        )
 
         print(model)
 
@@ -399,7 +411,7 @@ def create_and_prepare_model(args):
             max_seq_length=args.max_seq_length,
         )
 
-    else:
+    elif not args.without_lora:
         lora_config = LoraConfig(
             lora_alpha=args.lora_alpha,
             lora_dropout=args.lora_dropout,
@@ -512,6 +524,8 @@ for dataset_name in script_args.dataset_name:
     else:
         if os.path.exists(dataset_name):
             dataset_one = load_from_disk(dataset_name)
+        elif dataset_name == 'HachiML/alpaca_jp_python':
+            dataset_one = load_dataset(dataset_name, split="v1.0_cleaned")
         else:
             dataset_one = load_dataset(dataset_name, split="train")
     if dataset_name == 'sakusakumura/databricks-dolly-15k-ja-scored':
