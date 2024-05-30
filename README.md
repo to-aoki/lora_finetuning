@@ -1,17 +1,28 @@
 # LoRA instruction tuning script for Japanese Language models.
 
-| models                   | tested platform |
-|--------------------------|-----------------|
-| rinna gptneox            | jetson agx orin |
-| cyberagent opencalm      | jetson agx orin |
-| meta llama2              | jetson agx orin |
-| line-corporation gptneox | jetson agx orin |
-| stabilityai stablelm     | jetson agx orin |
-| deepseek coder           | jetson agx orin |
-| google gemma (bugs?)     | jetson agx orin |
-| Swallow MS 7b v.01       | jetson agx orin |
-| Swallow MX 8x7b NVE v.01 | jetson agx orin |
+## Tested 
+(maybe work on x86 too)
 
+ - Hardware
+  	+ [Jetson AGX Orin Developer Kit](https://www.nvidia.com/en-us/autonomous-machines/embedded-systems/jetson-orin/)
+
+ - Software
+  	+ [JetPack 6.0](https://developer.nvidia.com/embedded/jetpack-sdk-60)
+
+
+| Tested models            | 
+|--------------------------|
+| rinna gptneox            |
+| cyberagent opencalm      |
+| meta llama2              |
+| line-corporation gptneox |
+| stabilityai stablelm     |
+| llm-jp/FugakuLLM         |
+| deepseek coder           |
+| google gemma             |
+| Swallow MS 7b v.01       |
+| Swallow MX 8x7b NVE v.01 |
+| Phi3-mini                |
 
 **finetune**
 
