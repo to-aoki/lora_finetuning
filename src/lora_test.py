@@ -101,6 +101,7 @@ if script_args.base_model:
         )
         FastLanguageModel.for_inference(model)
     else:
+        bnb_config = BitsAndBytesConfig()
         if script_args.load_in_4bit or script_args.load_in_4bit:
             compute_dtype = getattr(torch, script_args.bnb_4bit_compute_dtype)
             bnb_config = BitsAndBytesConfig(
@@ -110,22 +111,14 @@ if script_args.base_model:
                 bnb_4bit_compute_dtype=compute_dtype,
                 bnb_4bit_use_double_quant=script_args.use_nested_quant,
             )
-            model = AutoModelForCausalLM.from_pretrained(
-                script_args.base_model,
-                quantization_config=bnb_config,
-                device_map="auto",
-                torch_dtype=torch.bfloat16 if script_args.bf16 else torch.float16,
-                attn_implementation=attn_impl,
-                trust_remote_code=True
-            )
-        else:
-            model = AutoModelForCausalLM.from_pretrained(
-                script_args.base_model,
-                device_map="auto",
-                torch_dtype=torch.bfloat16 if script_args.bf16 else torch.float16,
-                attn_implementation=attn_impl,
-                trust_remote_code=True
-            )
+        model = AutoModelForCausalLM.from_pretrained(
+            script_args.base_model,
+            quantization_config=bnb_config,
+            device_map="auto",
+            torch_dtype=torch.bfloat16 if script_args.bf16 else torch.float16,
+            attn_implementation=attn_impl,
+            trust_remote_code=True
+        )
 
     script_args.lora_model = script_args.base_model
 else:
@@ -249,7 +242,7 @@ def generate(prompt, eos_token=None):
 text = instruct_template.build_inference("pythonでHello,worldと出力するコードを記述してください。")
 print(text, generate(text, instruct_template.replace_eos))
 
-text = instruct_template.build_inference("pythonでtransformersを用いてとGPT2を訓練するコードを記述してください。")
+text = instruct_template.build_inference("pythonでtransformersを用いてGPT2を訓練するコードを記述してください。")
 print(text, generate(text, instruct_template.replace_eos))
 
 text = instruct_template.build_inference("光の三原色は？")

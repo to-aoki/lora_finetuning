@@ -157,18 +157,20 @@ else:
                 if isinstance(module, cls):
                     print(f"Dequantizing `{name}`...")
                     quant_state = copy.deepcopy(module.weight.quant_state)
-                    #print(quant_state)
-                    # quant_state[2] = dtype
-                    weights = dequantize_4bit(module.weight.data, quant_state=quant_state, quant_type="nf4").to(dtype)
+                    weights = dequantize_4bit(
+                        module.weight.data, quant_state=quant_state, quant_type="nf4").to(dtype)
 
                     new_module = torch.nn.Linear(module.in_features, module.out_features, bias=None, dtype=dtype)
                     new_module.weight = torch.nn.Parameter(weights)
-                    new_module.to(device=script_args.device_map, dtype=dtype)
+                    new_module.to(device="cpu", dtype=dtype)
 
                     parent, target, target_name = _get_submodules(model, name)
                     setattr(parent, target_name, new_module)
 
-            model.is_loaded_in_4bit = False
+            config_dict = model.config.to_dict()
+            del config_dict['quantization_config']
+            model.config = model.config.from_dict(config_dict)
+
     model.save_pretrained(script_args.output_path,
                           safe_serialization=not script_args.without_safe_serialization)
     if tokenizer is None:
