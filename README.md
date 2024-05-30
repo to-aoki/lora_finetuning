@@ -24,6 +24,8 @@
 | Swallow MX 8x7b NVE v.01 |
 | Phi3-mini                |
 
+## How to work 
+
 **finetune**
 
 ```bash
