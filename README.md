@@ -10,7 +10,7 @@
   	+ [JetPack 6.0](https://developer.nvidia.com/embedded/jetpack-sdk-60)
 
 
-| Tested models            | 
+| models                   | 
 |--------------------------|
 | rinna gptneox            |
 | cyberagent opencalm      |
