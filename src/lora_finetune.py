@@ -27,7 +27,6 @@ from datasets import load_dataset, concatenate_datasets, load_from_disk
 from transformers import (
     AutoConfig,
     AutoModelForCausalLM,
-    BitsAndBytesConfig,
     HfArgumentParser,
     AutoTokenizer,
     TrainingArguments,
@@ -36,8 +35,7 @@ from transformers import (
 from accelerate import Accelerator
 from transformers.trainer_callback import TrainerCallback, TrainerState, TrainerControl
 
-import bitsandbytes as bnb
-from peft import LoraConfig, LoftQConfig, prepare_model_for_kbit_training, get_peft_model
+from peft import LoraConfig, LoftQConfig, get_peft_model
 from template import templates_lookup, TemplateTokenizer
 
 
@@ -73,7 +71,7 @@ class ScriptArguments:
         metadata={"help": "The preference dataset to use."},
     )
     use_4bit: Optional[bool] = field(
-        default=True,
+        default=False,
         metadata={"help": "Activate 4bit precision base model loading"},
     )
     use_8bit: Optional[bool] = field(
@@ -109,7 +107,7 @@ class ScriptArguments:
         metadata={"help": "Enables gradient checkpointing."},
     )
     optim: Optional[str] = field(
-        default="paged_adamw_8bit",
+        default="paged_lion_8bit",
         metadata={"help": "The optimizer to use."},
     )
     lr_scheduler_type: str = field(
@@ -192,19 +190,6 @@ instruct_template = templates_lookup.get(script_args.prompt_format)
 accelerator = Accelerator()
 
 
-def find_all_linear_names(target_model):
-    # https://note.com/npaka/n/na506c63b8cc9#260d93c9-2984-4a34-8118-8f68d64655b6
-    cls = bnb.nn.Linear4bit  # (default:torch.nn.Linear,4bit:bnb.nn.Linear4bit,8bit:bnb.nn.Linear8bitLt)
-    lora_module_names = set()
-    for name, module in target_model.named_modules():
-        if isinstance(module, cls):
-            names = name.split('.')
-            lora_module_names.add(names[0] if len(names) == 1 else names[-1])
-    if 'lm_head' in lora_module_names:  # needed for 16-bit
-        lora_module_names.remove('lm_head')
-    return list(lora_module_names)
-
-
 def create_and_prepare_model(args):
 
     compute_dtype = getattr(torch, args.bnb_4bit_compute_dtype)
@@ -218,12 +203,16 @@ def create_and_prepare_model(args):
 
     loftq_config = {}
     init_lora_weights = True
+    bnb_config = None
     if args.with_loftq:
         init_lora_weights = 'loftq'
         loftq_config = LoftQConfig(loftq_bits=4 if args.use_4bit else 8, loftq_iter=1)
-    elif not args.with_unsloth and not args.without_lora:
+    elif not args.with_unsloth and not args.without_lora and (args.use_4bit or args.use_8bit):
+        import bitsandbytes as bnb
+        from transformers import BitsAndBytesConfig
         bnb_config = BitsAndBytesConfig(
             load_in_4bit=args.use_4bit,
+            load_in_8bit=args.use_8bit,
             bnb_4bit_quant_type=args.bnb_4bit_quant_type,
             bnb_4bit_compute_dtype=compute_dtype,
             bnb_4bit_use_double_quant=args.use_nested_quant,
@@ -329,7 +318,7 @@ def create_and_prepare_model(args):
                 trust_remote_code=args.trust_remote_code,
             )
         else:
-            if not args.without_lora:
+            if bnb_config is not None:
                 model = AutoModelForCausalLM.from_pretrained(
                     args.base_model,
                     quantization_config=bnb_config,
@@ -348,7 +337,10 @@ def create_and_prepare_model(args):
                     attn_implementation=attn_impl,
                     trust_remote_code=args.trust_remote_code,
                 )
-        if not args.without_lora:
+                model.train()
+
+        if not args.without_lora and (args.use_4bit or args.use_8bit):
+            from peft import prepare_model_for_kbit_training
             model = prepare_model_for_kbit_training(
                 model,
                 use_gradient_checkpointing=args.gradient_checkpointing,
@@ -357,6 +349,7 @@ def create_and_prepare_model(args):
 
         print(model)
 
+    target_modules = 'all-linear'
     if model.config.model_type == 'llama':
         # https://www.docswell.com/s/KanHatakeyama/ZYW6ME-2023-12-09-121017#p31
         target_modules = [
@@ -385,8 +378,6 @@ def create_and_prepare_model(args):
             "q_proj",
             "down_proj"
         ]
-    else:
-        target_modules = find_all_linear_names(model)
 
     fan_in_fan_out = False
     if model.config.model_type == 'gpt2':
