@@ -247,7 +247,7 @@ templates_lookup = {
         no_input_template="[INST]　{} ",
         conversation_sys="[INST] {} ",
         conversation_template="[INST] {} ",
-        response_prefix="[/INST]\n",
+        response_prefix="[/INST]",
         bos_only_first=True
     ),
     "chatml": InputTemplate(
@@ -291,6 +291,16 @@ templates_lookup = {
         eos_only_end=True,
         replace_eos='<|end|>'
     ),
+    "qwen2_instruct": InputTemplate(
+        input_template="<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n{}\n{}<|im_end|>\n",
+        no_input_template="<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n",
+        conversation_sys="<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n",
+        conversation_template="<|im_start|>user\n{}<|im_end|>\n",
+        response_prefix="<|im_start|>assistant\n",
+        bos_only_first=True,
+        eos_only_end=True,
+    ),
+
 }
 
 

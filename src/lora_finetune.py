@@ -47,7 +47,7 @@ class ScriptArguments:
     per_device_train_batch_size: Optional[int] = field(default=8)
     per_device_eval_batch_size: Optional[int] = field(default=1)
     gradient_accumulation_steps: Optional[int] = field(default=4)
-    learning_rate: Optional[float] = field(default=5e-5)
+    learning_rate: Optional[float] = field(default=6e-5)
     max_grad_norm: Optional[float] = field(default=0.3)
     weight_decay: Optional[int] = field(default=0.001)
     lora_alpha: Optional[int] = field(default=64)
@@ -107,7 +107,7 @@ class ScriptArguments:
         metadata={"help": "Enables gradient checkpointing."},
     )
     optim: Optional[str] = field(
-        default="paged_lion_8bit",
+        default="adamw_hf",
         metadata={"help": "The optimizer to use."},
     )
     lr_scheduler_type: str = field(
@@ -337,7 +337,6 @@ def create_and_prepare_model(args):
                     attn_implementation=attn_impl,
                     trust_remote_code=args.trust_remote_code,
                 )
-                model.train()
 
         if not args.without_lora and (args.use_4bit or args.use_8bit):
             from peft import prepare_model_for_kbit_training
@@ -501,6 +500,10 @@ if eos_token == bos_token:
     bos_token = ''
 if not script_args.add_bos_token:
     bos_token = ''
+
+if bos_token is None:
+    bos_token = ''
+
 instruct_template.bos_token = bos_token
 instruct_template.eos_token = eos_token
 

@@ -73,6 +73,7 @@ class ScriptArguments:
         metadata={"help": "Quantization type fp4 or nf4"},
     )
 
+
 parser = HfArgumentParser(ScriptArguments)
 script_args = parser.parse_args_into_dataclasses()[0]
 
@@ -101,7 +102,6 @@ if script_args.base_model:
         )
         FastLanguageModel.for_inference(model)
     else:
-        bnb_config = BitsAndBytesConfig()
         if script_args.load_in_4bit or script_args.load_in_4bit:
             compute_dtype = getattr(torch, script_args.bnb_4bit_compute_dtype)
             bnb_config = BitsAndBytesConfig(
@@ -111,14 +111,22 @@ if script_args.base_model:
                 bnb_4bit_compute_dtype=compute_dtype,
                 bnb_4bit_use_double_quant=script_args.use_nested_quant,
             )
-        model = AutoModelForCausalLM.from_pretrained(
-            script_args.base_model,
-            quantization_config=bnb_config,
-            device_map="auto",
-            torch_dtype=torch.bfloat16 if script_args.bf16 else torch.float16,
-            attn_implementation=attn_impl,
-            trust_remote_code=True
-        )
+            model = AutoModelForCausalLM.from_pretrained(
+                script_args.base_model,
+                quantization_config=bnb_config,
+                device_map="auto",
+                torch_dtype=torch.bfloat16 if script_args.bf16 else torch.float16,
+                attn_implementation=attn_impl,
+                trust_remote_code=True
+            )
+        else:
+            model = AutoModelForCausalLM.from_pretrained(
+                script_args.base_model,
+                device_map="auto",
+                torch_dtype=torch.bfloat16 if script_args.bf16 else torch.float16,
+                attn_implementation=attn_impl,
+                trust_remote_code=True
+            )
 
     script_args.lora_model = script_args.base_model
 else:
@@ -171,6 +179,15 @@ else:
                 attn_implementation=attn_impl,
                 trust_remote_code=True,
             )
+            model = PeftModel.from_pretrained(
+                model,
+                script_args.lora_model,
+                is_trainable=False,
+                attn_implementation=attn_impl,
+                device_map="auto",
+                torch_dtype=torch.bfloat16 if script_args.bf16 else torch.float16,
+                trust_remote_code=True
+            )
 
 
 tokenizer_path = script_args.lora_model
@@ -201,6 +218,9 @@ bos_token = tokenizer.bos_token
 if eos_token == bos_token:
     bos_token = ''
 if not script_args.add_bos_token:
+    bos_token = ''
+
+if bos_token is None:
     bos_token = ''
 
 instruct_template.bos_token = bos_token
