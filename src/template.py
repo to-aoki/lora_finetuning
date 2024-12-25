@@ -240,7 +240,7 @@ templates_lookup = {
         conversation_sys="<start_of_turn>user\n{}<end_of_turn>\n",
         conversation_template="<start_of_turn>user\n{}<end_of_turn>\n",
         response_prefix="<start_of_turn>model\n",
-        # response_suffix="<end_of_turn>\n",  # <end_of_turn>model ? not learning
+        response_suffix="<end_of_turn>\n",  # <end_of_turn>model ? not learning
     ),
     "mistral": InputTemplate(
         input_template="[INST] {} \n {} ",
@@ -387,7 +387,6 @@ class TemplateTokenizer:
                 continue
             input_ids_list.append(inputs_tokenized)
             labels_list.append(labels_tokenized)
-
         return {"input_ids": input_ids_list, "labels": labels_list}
 
     def chat_tokenize(self, message, history=[]):

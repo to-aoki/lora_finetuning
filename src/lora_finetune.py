@@ -18,7 +18,6 @@
 
 import os
 import re
-import math
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence
 
@@ -33,7 +32,6 @@ from transformers import (
     Trainer,
 )
 from accelerate import Accelerator
-from transformers.trainer_callback import TrainerCallback, TrainerState, TrainerControl
 
 from peft import LoraConfig, LoftQConfig, get_peft_model
 from template import templates_lookup, TemplateTokenizer
@@ -44,7 +42,7 @@ class ScriptArguments:
     """
     These arguments vary depending on how many GPUs you have, what their capacity and features are, and what size model you want to train.
     """
-    per_device_train_batch_size: Optional[int] = field(default=8)
+    per_device_train_batch_size: Optional[int] = field(default=2)
     per_device_eval_batch_size: Optional[int] = field(default=1)
     gradient_accumulation_steps: Optional[int] = field(default=4)
     learning_rate: Optional[float] = field(default=6e-5)
@@ -138,11 +136,15 @@ class ScriptArguments:
         default="alpaca_short",
         metadata={"help": "lookup template.py"},
     )
-    use_flash_attention_2: bool = field(
-        default=False,
+    use_flash_attention: bool = field(
+        default=True,
     )
     use_sdpa: bool = field(
-        default=True,
+        # JP61 torch 2.5 unstable
+        # https://pypi.jetson-ai-lab.dev/jp6/cu126/+f/5cf/9ed17e35cb752/torch-2.5.0-cp310-cp310-linux_aarch64.whl#sha256=5cf9ed17e35cb7523812aeda9e7d6353c437048c5a6df1dc6617650333049092
+        # /usr/local/lib/python3.10/dist-packages/torch/autograd/graph.py:825: UserWarning: cuDNN SDPA backward got grad_output.strides() != output.strides(), attempting to materialize a grad_output with matching strides... (Triggered internally at /opt/pytorch/aten/src/ATen/native/cudnn/MHA.cpp:674.)
+        #   return Variable._execution_engine.run_backward(  # Calls into the C++ engine to run the backward pass
+        default=False,
     )
     target_all_layer: bool = field(
         default=False,
@@ -180,13 +182,13 @@ class ScriptArguments:
     )
     without_lora: bool = field(
         default=False
+
     )
+
 
 parser = HfArgumentParser(ScriptArguments)
 script_args = parser.parse_args_into_dataclasses()[0]
-
 instruct_template = templates_lookup.get(script_args.prompt_format)
-
 accelerator = Accelerator()
 
 
@@ -218,26 +220,22 @@ def create_and_prepare_model(args):
             bnb_4bit_use_double_quant=args.use_nested_quant,
         )
 
-    # Load the entire model on the GPU 0
-    # switch to `device_map = "auto"` for multi-GPU
     device_map = "auto"
 
     # require flash-attn or torch 2.1 later
     attn_impl = None
     if args.use_sdpa:
         attn_impl = "sdpa"
-    if args.use_flash_attention_2:
+    if args.use_flash_attention:
         # RuntimeError: FlashAttention backward for head dim > 192 requires A100/A800 or H100/H800
         # FlashAttention v2.5.5 support
         attn_impl = "flash_attention_2"
 
-    long_lora = False
     try:
         config = AutoConfig.from_pretrained(args.base_model, trust_remote_code=args.trust_remote_code)
         if config.model_type == 'gpt2':
             attn_impl = "eager"
-        if args.long_lora and (config.model_type == "gpt-neox" or config.model_type == "llama"):
-            long_lora = True
+
     except:
         # OSError: models does not appear to have a file named configuration_cohere.py. Checkout 'models/main' for available files.
         pass
@@ -254,32 +252,6 @@ def create_and_prepare_model(args):
         if args.tokenizer_path is not None:
             tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_path)
     else:
-        if long_lora:
-            print('with long_lora')
-            orig_rope_scaling = getattr(config, "rope_scaling", None)
-            if orig_rope_scaling is None:
-                orig_rope_scaling = {"factor": 1}
-            orig_rope_scaling_factor = orig_rope_scaling["factor"] if "factor" in orig_rope_scaling.keys() else 1
-            orig_ctx_len = getattr(config, "max_position_embeddings", None)
-            if orig_ctx_len is not None:
-                print('max_position_embeddings:', orig_ctx_len)
-                orig_ctx_len *= orig_rope_scaling_factor
-                if args.max_seq_length > orig_ctx_len:
-                    scaling_factor = float(math.ceil(args.max_seq_length / orig_ctx_len))
-                    print('scaling_factor:', scaling_factor)
-                    config.rope_scaling = {"type": "linear", "factor": scaling_factor}
-                    if config.model_type == "gpt-neox":
-                        print("modify long tokens: gpt-neox")
-                        # https://github.com/dvlab-research/LongLoRA/blob/main/gptneox_attn_replace.py
-                        from gptneox_attn_replace import replace_gpt_neox_attn
-                        replace_gpt_neox_attn(args.use_flash_attention_2, args.use_full_attn)
-                    elif config.model_type == "llama":
-                        print("modify long tokens: llama")
-                        # https://github.com/dvlab-research/LongLoRA/blob/main/llama_attn_replace_sft.py
-                        from llama_attn_replace_sft import replace_llama_attn
-                        replace_llama_attn(args.use_flash_attention_2, args.use_full_attn)
-                    config.max_position_embeddings = args.max_seq_length
-                    config.save_pretrained(args.output_dir)
 
         tokenizer_path = args.base_model
         if args.tokenizer_path is not None:
@@ -347,6 +319,7 @@ def create_and_prepare_model(args):
             )
 
         print(model)
+
 
     target_modules = 'all-linear'
     if model.config.model_type == 'llama':
@@ -427,10 +400,10 @@ def create_and_prepare_model(args):
 
     print('target_modules:', target_modules)
     print("=" * 80)
-    print(tokenizer.eos_token_id, tokenizer.eos_token)
-    print(tokenizer.bos_token_id, tokenizer.bos_token)
-    print(tokenizer.pad_token_id, tokenizer.pad_token)
-    print(tokenizer.unk_token_id, tokenizer.unk_token)
+    print('eos:', tokenizer.eos_token_id, tokenizer.eos_token)
+    print('bos:', tokenizer.bos_token_id, tokenizer.bos_token)
+    print('pad:', tokenizer.pad_token_id, tokenizer.pad_token)
+    print('unk:', tokenizer.unk_token_id, tokenizer.unk_token)
     print(tokenizer.padding_side)
     print("=" * 80)
 
@@ -482,10 +455,10 @@ class DataCollatorForCompletion:
             [instance[key] for instance in instances] for key in ("input_ids", "labels"))
         input_ids = [torch.tensor(x) for x in input_ids]
         input_ids = torch.nn.utils.rnn.pad_sequence(
-            input_ids, batch_first=True, padding_value=self.pad_token_id
+            input_ids, batch_first=False, padding_value=self.pad_token_id
         )
         labels = [torch.tensor(x) for x in labels]
-        labels = torch.nn.utils.rnn.pad_sequence(labels, batch_first=True, padding_value=-100)
+        labels = torch.nn.utils.rnn.pad_sequence(labels, batch_first=False, padding_value=-100)
 
         return dict(
             input_ids=input_ids,
@@ -506,6 +479,7 @@ if bos_token is None:
 
 instruct_template.bos_token = bos_token
 instruct_template.eos_token = eos_token
+
 
 dataset = None
 for dataset_name in script_args.dataset_name:
@@ -529,36 +503,23 @@ for dataset_name in script_args.dataset_name:
     template_tokenizer = TemplateTokenizer(
         tokenizer, instruct_template, dataset_one, max_seq_length=script_args.max_seq_length,
         source_mask=script_args.only_instruct)
+
     dataset_one = template_tokenizer.tokenize_dataset()
+
     if dataset is None:
         dataset = dataset_one
     else:
         dataset = concatenate_datasets([dataset, dataset_one])
 
+    sample_size = 100
+    import random
+    if sample_size and sample_size < len(dataset):
+        indices = random.sample(range(len(dataset)), sample_size)
+    dataset = dataset.select(indices)
+
 
 dataset = dataset.shuffle(seed=42)
 
-callbacks = []
-
-if script_args.long_lora:
-    class SavePeftModelCallback(TrainerCallback):
-        def on_save(
-            self,
-            args: TrainingArguments,
-            state: TrainerState,
-            control: TrainerControl,
-            **kwargs,
-        ):
-            checkpoint_folder = os.path.join(args.output_dir, f"checkpoint-{state.global_step}")
-            modules_to_save = ["embed", "norm"]
-            state_dict = kwargs["model"].state_dict()
-            to_save = {}
-            for key, value in state_dict.items():
-                if any(module_name in key for module_name in modules_to_save):
-                    to_save[key.replace("base_model.model.", "")] = value
-            torch.save(to_save, os.path.join(checkpoint_folder, "trainable_params.bin"))
-            return control
-    callbacks = [SavePeftModelCallback]
 
 if gradient_checkpointing:
     model.config.use_cache = False  # required for gradient checkpointing
@@ -567,15 +528,11 @@ if gradient_checkpointing:
 
 trainer = Trainer(
     model=model,
-    callbacks=callbacks,
     train_dataset=dataset,
     args=training_arguments,
     data_collator=DataCollatorForCompletion(
         pad_token_id=tokenizer.pad_token_id),
 )
-
-if script_args.long_lora:
-    [p.requires_grad_() for n, p in trainer.model.named_parameters() if any([k in n for k in ["embed", "norm"]])]
 
 trainer.train()
 trainer.save_state()
@@ -583,11 +540,3 @@ output_dir = os.path.join(script_args.output_dir, "final_checkpoints")
 trainer.model.save_pretrained(output_dir)
 tokenizer.save_pretrained(output_dir)
 
-if script_args.long_lora:
-    modules_to_save = ["embed", "norm"]
-    state_dict = model.state_dict()
-    to_save = {}
-    for key, value in state_dict.items():
-        if any(module_name in key for module_name in modules_to_save):
-            to_save[key.replace("base_model.model.", "")] = value
-    torch.save(to_save, os.path.join(output_dir, "trainable_params.bin"))
