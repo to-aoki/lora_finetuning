@@ -455,10 +455,10 @@ class DataCollatorForCompletion:
             [instance[key] for instance in instances] for key in ("input_ids", "labels"))
         input_ids = [torch.tensor(x) for x in input_ids]
         input_ids = torch.nn.utils.rnn.pad_sequence(
-            input_ids, batch_first=False, padding_value=self.pad_token_id
+            input_ids, batch_first=True, padding_value=self.pad_token_id
         )
         labels = [torch.tensor(x) for x in labels]
-        labels = torch.nn.utils.rnn.pad_sequence(labels, batch_first=False, padding_value=-100)
+        labels = torch.nn.utils.rnn.pad_sequence(labels, batch_first=True, padding_value=-100)
 
         return dict(
             input_ids=input_ids,
@@ -510,13 +510,6 @@ for dataset_name in script_args.dataset_name:
         dataset = dataset_one
     else:
         dataset = concatenate_datasets([dataset, dataset_one])
-
-    sample_size = 100
-    import random
-    if sample_size and sample_size < len(dataset):
-        indices = random.sample(range(len(dataset)), sample_size)
-    dataset = dataset.select(indices)
-
 
 dataset = dataset.shuffle(seed=42)
 
