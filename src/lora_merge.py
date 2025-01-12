@@ -50,11 +50,8 @@ class ScriptArguments:
     load_in_4bit: Optional[bool] = field(
         default=False,
     )
-    load_in_8bit: Optional[bool] = field(
-        default=False,
-    )
     unsloth_save_method: Optional[str] = field(
-        default="merged_16bit",  # or merged_4bit
+        default="merged_16bit",
     )
     use_unsloth_4bit: Optional[bool] = field(
         default=False,
@@ -79,6 +76,7 @@ class ScriptArguments:
         metadata={"help": "Activate nested quantization for 4bit base models"},
     )
 
+
 parser = HfArgumentParser(ScriptArguments)
 script_args = parser.parse_args_into_dataclasses()[0]
 tokenizer = None
@@ -88,15 +86,15 @@ if script_args.use_unsloth:
         model_name=script_args.merge_target_path,
         max_seq_length=script_args.unsloth_max_seq_length,
         dtype=None,
+        device_map="auto",
         load_in_4bit=script_args.use_unsloth_4bit,
     )
+    FastLanguageModel.for_inference(model)
 else:
     bnb_config = None
     if script_args.load_in_4bit or script_args.load_in_4bit:
         compute_dtype = getattr(torch, script_args.bnb_4bit_compute_dtype)
         bnb_config = BitsAndBytesConfig(
-            load_in_4bit=script_args.load_in_4bit,
-            load_in_8bit=script_args.load_in_8bit,
             bnb_4bit_quant_type=script_args.bnb_4bit_quant_type,
             bnb_4bit_compute_dtype=compute_dtype,
             bnb_4bit_use_double_quant=script_args.use_nested_quant,
@@ -137,15 +135,14 @@ else:
 
 if script_args.use_unsloth:
     save_method = script_args.unsloth_save_method
-    if script_args.use_unsloth_4bit and save_method != 'merged_4bit_forced':
-        save_method = 'merged_4bit'
+    if script_args.use_unsloth_4bit:
+        save_method = 'merged_4bit_forced'
     model.save_pretrained_merged(
         script_args.output_path, tokenizer, save_method=save_method)
 
 else:
     model = model.merge_and_unload()
     if script_args.load_in_4bit:
-        # TODO 8bit
         import bitsandbytes as bnb
         from peft.utils import _get_submodules
         from bitsandbytes.functional import dequantize_4bit
@@ -157,11 +154,16 @@ else:
                 if isinstance(module, cls):
                     print(f"Dequantizing `{name}`...")
                     quant_state = copy.deepcopy(module.weight.quant_state)
+                    quant_state.dtype = dtype
                     weights = dequantize_4bit(
                         module.weight.data, quant_state=quant_state, quant_type="nf4").to(dtype)
-
                     new_module = torch.nn.Linear(module.in_features, module.out_features, bias=None, dtype=dtype)
                     new_module.weight = torch.nn.Parameter(weights)
+                    has_bias = module.bias is not None
+                    new_module = torch.nn.Linear(module.in_features, module.out_features, bias=has_bias, dtype=dtype)
+                    new_module.weight = torch.nn.Parameter(weights, requires_grad=False)
+                    if has_bias:
+                        new_module.bias.data = module.bias.data.detach().to(dtype)
                     new_module.to(device="cpu", dtype=dtype)
 
                     parent, target, target_name = _get_submodules(model, name)
@@ -172,7 +174,7 @@ else:
             model.config = model.config.from_dict(config_dict)
 
     model.save_pretrained(script_args.output_path,
-                          safe_serialization=not script_args.without_safe_serialization)
+                          safe_serialization=not script_args.without_safe_serialization,)
     if tokenizer is None:
         tokenizer = AutoTokenizer.from_pretrained(
             base_model_name_or_path
