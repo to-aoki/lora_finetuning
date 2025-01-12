@@ -12,17 +12,17 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 # origin: https://gist.github.com/younesbelkada/9f7f75c94bdc1981c8ca5cc937d4a4da
 # written: Toshihiko Aoki
 
 import os
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence
 
 import torch
-from datasets import load_dataset, concatenate_datasets, load_from_disk
+from datasets import load_dataset, concatenate_datasets, load_from_disk, interleave_datasets
 from transformers import (
     AutoConfig,
     AutoModelForCausalLM,
@@ -42,16 +42,16 @@ class ScriptArguments:
     """
     These arguments vary depending on how many GPUs you have, what their capacity and features are, and what size model you want to train.
     """
-    per_device_train_batch_size: Optional[int] = field(default=2)
+    per_device_train_batch_size: Optional[int] = field(default=4)
     per_device_eval_batch_size: Optional[int] = field(default=1)
     gradient_accumulation_steps: Optional[int] = field(default=4)
-    learning_rate: Optional[float] = field(default=6e-5)
+    learning_rate: Optional[float] = field(default=5e-6)
     max_grad_norm: Optional[float] = field(default=0.3)
     weight_decay: Optional[int] = field(default=0.001)
     lora_alpha: Optional[int] = field(default=64)
     lora_r: Optional[int] = field(default=16)
     lora_dropout: Optional[float] = field(default=0.05)
-    max_seq_length: Optional[int] = field(default=2048)
+    max_seq_length: Optional[int] = field(default=4096)
     base_model: Optional[str] = field(
         default="tokyotech-llm/Swallow-MS-7b-v0.1",
         metadata={
@@ -71,10 +71,6 @@ class ScriptArguments:
     use_4bit: Optional[bool] = field(
         default=False,
         metadata={"help": "Activate 4bit precision base model loading"},
-    )
-    use_8bit: Optional[bool] = field(
-        default=False,
-        metadata={"help": "Activate 8bit precision base model loading"},
     )
     use_nested_quant: Optional[bool] = field(
         default=True,
@@ -105,7 +101,7 @@ class ScriptArguments:
         metadata={"help": "Enables gradient checkpointing."},
     )
     optim: Optional[str] = field(
-        default="adamw_hf",
+        default="adamw_torch",
         metadata={"help": "The optimizer to use."},
     )
     lr_scheduler_type: str = field(
@@ -114,7 +110,7 @@ class ScriptArguments:
     )
     max_steps: int = field(default=-1, metadata={"help": "How many optimizer update steps to take"})
 
-    warmup_ratio: float = field(default=0.03, metadata={"help": "Fraction of steps to do a warmup for"})
+    warmup_ratio: float = field(default=0.01, metadata={"help": "Fraction of steps to do a warmup for"})
     weight_decay: float = field(default=0.001)
     group_by_length: bool = field(
         default=True,
@@ -182,7 +178,9 @@ class ScriptArguments:
     )
     without_lora: bool = field(
         default=False
-
+    )
+    sampling_size: int = field(
+        default=-1
     )
 
 
@@ -206,15 +204,15 @@ def create_and_prepare_model(args):
     loftq_config = {}
     init_lora_weights = True
     bnb_config = None
-    if args.with_loftq:
+    if args.with_loftq and args.use_4bit:
         init_lora_weights = 'loftq'
-        loftq_config = LoftQConfig(loftq_bits=4 if args.use_4bit else 8, loftq_iter=1)
-    elif not args.with_unsloth and not args.without_lora and (args.use_4bit or args.use_8bit):
+        loftq_config = LoftQConfig(loftq_bits=4, loftq_iter=1)
+    elif not args.with_unsloth and not args.without_lora and args.use_4bit:
         import bitsandbytes as bnb
         from transformers import BitsAndBytesConfig
         bnb_config = BitsAndBytesConfig(
             load_in_4bit=args.use_4bit,
-            load_in_8bit=args.use_8bit,
+            # load_in_8bit=args.use_8bit,
             bnb_4bit_quant_type=args.bnb_4bit_quant_type,
             bnb_4bit_compute_dtype=compute_dtype,
             bnb_4bit_use_double_quant=args.use_nested_quant,
@@ -246,8 +244,8 @@ def create_and_prepare_model(args):
             model_name=args.base_model,
             max_seq_length=args.max_seq_length,
             dtype=None,
-            load_in_4bit=False if args.with_loftq else args.use_4bit,
-            load_in_8bit=False if args.with_loftq or args.use_4bit else True,
+            load_in_4bit=True,
+            # load_in_8bit=False if args.with_loftq or args.use_4bit else True,
         )
         if args.tokenizer_path is not None:
             tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_path)
@@ -310,7 +308,7 @@ def create_and_prepare_model(args):
                     trust_remote_code=args.trust_remote_code,
                 )
 
-        if not args.without_lora and (args.use_4bit or args.use_8bit):
+        if not args.without_lora and args.use_4bit:
             from peft import prepare_model_for_kbit_training
             model = prepare_model_for_kbit_training(
                 model,
@@ -319,7 +317,6 @@ def create_and_prepare_model(args):
             )
 
         print(model)
-
 
     target_modules = 'all-linear'
     if model.config.model_type == 'llama':
@@ -356,9 +353,7 @@ def create_and_prepare_model(args):
         fan_in_fan_out = True
 
     if args.with_unsloth:
-        # accepted_modules = frozenset
-        if model.config.model_type == 'llama':
-            target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
+        target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
                           "gate_proj", "up_proj", "down_proj"]
         model = FastLanguageModel.get_peft_model(
             model,
@@ -368,7 +363,7 @@ def create_and_prepare_model(args):
             target_modules=target_modules,
             lora_alpha=args.lora_alpha,
             lora_dropout=0,  # Supports any, but = 0 is optimized
-            bias="none",  # Supports any, but = "none" is optimized
+            bias="none",     # Supports any, but = "none" is optimized
             use_gradient_checkpointing=True,
             random_state=3407,
             max_seq_length=args.max_seq_length,
@@ -486,16 +481,17 @@ for dataset_name in script_args.dataset_name:
     if dataset_name.endswith('.json'):
         dataset_one = load_dataset(
             'json',
-            data_files=script_args.dataset_name,
+            data_files=dataset_name,
             split="train",
         )
     else:
         if os.path.exists(dataset_name):
-            dataset_one = load_from_disk(dataset_name)
+            dataset_one = load_from_disk(dataset_name)['train']
         elif dataset_name == 'HachiML/alpaca_jp_python':
             dataset_one = load_dataset(dataset_name, split="v1.0_cleaned")
         else:
             dataset_one = load_dataset(dataset_name, split="train")
+
     if dataset_name == 'sakusakumura/databricks-dolly-15k-ja-scored':
         dataset_one = dataset_one.filter(
             lambda example: example["bertscore"]["f1"] > script_args.dolly_ja_score)
@@ -503,8 +499,10 @@ for dataset_name in script_args.dataset_name:
     template_tokenizer = TemplateTokenizer(
         tokenizer, instruct_template, dataset_one, max_seq_length=script_args.max_seq_length,
         source_mask=script_args.only_instruct)
-
     dataset_one = template_tokenizer.tokenize_dataset()
+    if script_args.sampling_size > 0:
+        dataset_one = dataset_one.shuffle(seed=42)
+        dataset_one = dataset_one.select(range(script_args.sampling_size))
 
     if dataset is None:
         dataset = dataset_one

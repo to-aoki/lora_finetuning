@@ -98,6 +98,19 @@ class InputTemplate:
             eos_token = ''
         conversations = []
         instruction_histories = example['conversations']
+
+        # Share GPT
+        writer_attr = 'from'
+        sentence_attr = 'value'
+        user_value = 'human'
+        llm_value = 'gpt'
+        if instruction_histories[0][0].get('role', None) is not None:
+            # OpenAI Chat API messages
+            writer_attr = 'role'
+            sentence_attr = 'content'
+            user_value = 'user'
+            llm_value = 'assistant'
+
         for episodes in instruction_histories:
             full_instructions = []
             instructions = []
@@ -111,14 +124,14 @@ class InputTemplate:
                 template = self.bos_token + template
             found_human = False
             for e in episodes:
-                if e['from'] == 'human':
+                if e[writer_attr] == user_value:
                     found_human = True
-                    instruction_prompt = template.format(e['value'])
+                    instruction_prompt = template.format(e[sentence_attr])
                     template = self.conversation_template
                     instruct = bos_token + instruction_prompt + self.response_prefix
-                elif e['from'] == 'gpt' and found_human:
+                elif e[writer_attr] == llm_value and found_human:
                     found_human = False
-                    response = e['value'] + self.response_suffix + eos_token
+                    response = e[sentence_attr] + self.response_suffix + eos_token
                     full_instructions.append(instruct + response)
                     instructions.append(instruct)
             if self.eos_only_end:
@@ -331,7 +344,7 @@ class TemplateTokenizer:
         else:
             self.formatting_func = self.template.build_instruct
 
-    def tokenize_dataset(self, num_proc=None, batch_size=1000):
+    def tokenize_dataset(self, num_proc=12, batch_size=10000):
         return self.dataset.map(
             self._tokenize,
             batched=True,
