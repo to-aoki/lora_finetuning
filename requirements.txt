@@ -1,6 +1,6 @@
 datasets==2.18.0
 tokenizers==0.19.1
-transformers==4.41.0.dev0
+transformers>=4.48.0
 huggingface-hub==0.20.3
 bitsandbytes==0.43.0.dev0
 peft==0.10.0
