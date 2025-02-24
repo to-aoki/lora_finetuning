@@ -14,6 +14,8 @@
 # limitations under the License.
 # origin: https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Llama3.1_(8B)-GRPO.ipynb
 
+# tested jetson container: dustynv/vllm:r36.4.0-cu128
+
 import json
 import re
 
