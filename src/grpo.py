@@ -26,6 +26,7 @@ from datasets import load_dataset, Dataset
 from trl import GRPOConfig, GRPOTrainer
 
 # for jetson comment out
+# usr/local/lib/python3.10/dist-packages/unsloth/__init__.py
 # Reduce VRAM usage by reducing fragmentation
 # And optimize pinning of memory
 # os.environ["PYTORCH_CUDA_ALLOC_CONF"] = \
