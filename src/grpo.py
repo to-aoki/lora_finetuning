@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from typing import Literal
 import torch
 from datasets import load_dataset, Dataset
-from trl import GRPOConfig, GRPOTrainer
+from transformers import HfArgumentParser
 
 # for jetson comment out
 # /usr/local/lib/python3.10/dist-packages/unsloth/__init__.py
@@ -60,15 +60,14 @@ class GRPOTrainingArguments:
     max_prompt_length: int = 256
     max_completion_length: int = 2048
     num_train_epochs: int = 1
-    save_steps: int = 10
+    save_steps: int = 1000
     max_grad_norm: float = 0.1
     report_to: Literal["none"] = "none"
     output_dir: str = "outputs"
-    max_seq_length = 32768
+    max_seq_length = 32672
     lora_rank = 64
     model_name = "Qwen/Qwen2.5-Coder-7B-Instruct"
-
-from transformers import HfArgumentParser, TrainingArguments
+    load_in_4bit = True
 
 parser = HfArgumentParser(GRPOTrainingArguments)
 script_args = parser.parse_args_into_dataclasses()[0]
@@ -83,7 +82,7 @@ PatchFastRL("GRPO", FastLanguageModel)
 model, tokenizer = FastLanguageModel.from_pretrained(
     model_name=script_args.model_name,
     max_seq_length=script_args.max_seq_length,
-    load_in_4bit=True,
+    load_in_4bit=script_args.load_in_4bit,
     fast_inference=True,
     max_lora_rank=script_args.lora_rank,
     gpu_memory_utilization=script_args.gpu_memory_utilization,
@@ -246,6 +245,7 @@ def xmlcount_reward_func(completions, **kwargs) -> list[float]:
     contents = [completion[0]["content"] for completion in completions]
     return [count_xml(c) for c in contents]
 
+from trl import GRPOConfig, GRPOTrainer
 
 training_args = GRPOConfig(
     use_vllm=script_args.use_vllm,
@@ -283,9 +283,8 @@ trainer = GRPOTrainer(
     args=training_args,
     train_dataset=train_dataset,
 )
-
 trainer.train(
-    # resume_from_checkpoint=True
+#    resume_from_checkpoint=True
 )
 model.save_lora("grpo_saved_lora")
 
