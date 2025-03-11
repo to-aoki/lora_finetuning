@@ -167,7 +167,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--language", "-l",
         type=str,
-        default=None,
+        default="ja",
     )
     parser.add_argument(
         "--samples", "-n",

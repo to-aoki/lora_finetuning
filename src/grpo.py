@@ -59,6 +59,7 @@ class GRPOTrainingArguments:
     num_generations: int = 6
     max_prompt_length: int = 256
     max_completion_length: int = 2048
+    max_steps: int = -1
     num_train_epochs: int = 1
     save_steps: int = 1000
     max_grad_norm: float = 0.1
@@ -68,12 +69,13 @@ class GRPOTrainingArguments:
     lora_rank = 64
     model_name = "Qwen/Qwen2.5-Coder-7B-Instruct"
     load_in_4bit = True
+    resume_from_checkpoint = False
 
 parser = HfArgumentParser(GRPOTrainingArguments)
 script_args = parser.parse_args_into_dataclasses()[0]
 
 
-# Can increase for longer reasoning traces
+# Can increase for longer reasoning tracesu
 # Larger rank = smarter, but slower
 PatchFastRL("GRPO", FastLanguageModel)
 
@@ -265,6 +267,7 @@ training_args = GRPOConfig(
     max_prompt_length=script_args.max_prompt_length,
     max_completion_length=script_args.max_completion_length,
     num_train_epochs=script_args.num_train_epochs,
+    max_steps=script_args.max_steps,
     save_steps=script_args.save_steps,
     max_grad_norm=script_args.max_grad_norm,
     report_to=script_args.report_to,
@@ -284,8 +287,9 @@ trainer = GRPOTrainer(
     train_dataset=train_dataset,
 )
 trainer.train(
-#    resume_from_checkpoint=True
+    resume_from_checkpoint=script_args.resume_from_checkpoint
 )
+
 model.save_lora("grpo_saved_lora")
 
 text = tokenizer.apply_chat_template([
