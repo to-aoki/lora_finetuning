@@ -17,12 +17,11 @@
 
 import os
 import re
-import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence
 
 import torch
-from datasets import load_dataset, concatenate_datasets, load_from_disk, interleave_datasets
+from datasets import load_dataset, concatenate_datasets, load_from_disk
 from transformers import (
     AutoConfig,
     AutoModelForCausalLM,
@@ -47,7 +46,6 @@ class ScriptArguments:
     gradient_accumulation_steps: Optional[int] = field(default=4)
     learning_rate: Optional[float] = field(default=5e-6)
     max_grad_norm: Optional[float] = field(default=0.3)
-    weight_decay: Optional[int] = field(default=0.001)
     lora_alpha: Optional[int] = field(default=64)
     lora_r: Optional[int] = field(default=16)
     lora_dropout: Optional[float] = field(default=0.05)
